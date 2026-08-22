@@ -26,6 +26,20 @@ jobs:
 
       - run: npm ci
 
+      - name: Provision ephemeral test-signing keystore
+        working-directory: android
+        run: |
+          keytool -genkeypair -v -keystore ci-release.keystore \
+            -alias qvapay-ci -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=QvaPay CI, OU=CI, O=QvaPay, C=CU"
+          {
+            echo "MYAPP_UPLOAD_STORE_FILE=../ci-release.keystore"
+            echo "MYAPP_UPLOAD_STORE_PASSWORD=android"
+            echo "MYAPP_UPLOAD_KEY_ALIAS=qvapay-ci"
+            echo "MYAPP_UPLOAD_KEY_PASSWORD=android"
+          } > keystore.properties
+
       - name: Build release APK (arm64-v8a only)
         working-directory: android
         run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
