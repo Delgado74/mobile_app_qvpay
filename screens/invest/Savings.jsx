@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react'
 import { View, Text, StyleSheet, ScrollView, Linking, Modal, Pressable, TextInput, useWindowDimensions } from 'react-native'
+import { useTranslation } from 'react-i18next'
 
 // Theme
 import { useTheme } from '../../theme/ThemeContext'
@@ -8,12 +9,14 @@ import { useContainerStyles, useTextStyles } from '../../theme/themeUtils'
 // API (deposit/withdraw — las lecturas viven en React Query)
 import { savingApi } from '../../api/savingApi'
 import { useQueryClient } from '@tanstack/react-query'
+import { trimToFirstPage } from '../../api/queryUtils'
 import { useSavingsSummaryQuery } from '../../hooks/useSavingsSummaryQuery'
 import { useSavingsMovementsQuery } from './investQueries'
 
 // UI
 import QPButton from '../../ui/particles/QPButton'
 import QPLoader from '../../ui/particles/QPLoader'
+import QPBalance from '../../ui/particles/QPBalance'
 
 // Icons
 import FontAwesome6 from '@react-native-vector-icons/fontawesome6'
@@ -33,7 +36,8 @@ import { ROUTES } from '../../routes'
 
 // Helpers
 import { timeAgo, formatMoney } from '../../helpers'
-import QPFitText from '../../ui/particles/QPFitText'
+import { sanitizeAmountInput, parseAmountInput } from '../../helpers/amountInput'
+import { useKeyboardHeight } from '../../hooks/useKeyboardHeight'
 
 // The deposit/withdraw modal is one piece of state: which operation, the amount, and its loading flag
 const initialModal = { type: null, amount: '', loading: false }
@@ -63,11 +67,13 @@ function modalReducer(state, action) {
  */
 const Savings = ({ route }) => {
 
+	const { t } = useTranslation()
 	const { theme } = useTheme()
 	const containerStyles = useContainerStyles(theme)
 	const textStyles = useTextStyles(theme)
-	const { user, updateUser } = useAuth()
+	const { user } = useAuth()
 	const { height: windowHeight } = useWindowDimensions()
+	const { keyboardHeight, keyboardVisible } = useKeyboardHeight()
 
 	// Resumen (query compartida con BalanceCard/Invest) + movimientos. El
 	// summary de route.params pinta al instante mientras la query revalida
@@ -89,7 +95,7 @@ const Savings = ({ route }) => {
 	const { requireKyc, gateVisible, gateMessage, closeGate } = useKycGate()
 
 	const openModal = (type) => {
-		if (!requireKyc({ message: 'La cuenta de ahorro requiere tener tu identidad verificada. Es rápido y solo se hace una vez.' })) return
+		if (!requireKyc({ message: t('invest.savings.kycGateMessage') })) return
 		dispatchModal({ type: 'open', modalType: type })
 	}
 
@@ -101,17 +107,17 @@ const Savings = ({ route }) => {
 	}, [initialAction]) // eslint-disable-line react-hooks/exhaustive-deps
 
 	const handleModalSubmit = async () => {
-		const amount = parseFloat(modalAmount)
+		const amount = parseAmountInput(modalAmount)
 		if (!amount || amount < 1) {
-			toast.error('El monto mínimo es $1.00')
+			toast.error(t('invest.savings.toasts.minAmount'))
 			return
 		}
 		if (modalType === 'deposit' && amount > checkingBalance) {
-			toast.error('Balance insuficiente')
+			toast.error(t('invest.savings.toasts.insufficientBalance'))
 			return
 		}
 		if (modalType === 'withdraw' && amount > savingsBalance) {
-			toast.error('Balance de ahorros insuficiente')
+			toast.error(t('invest.savings.toasts.insufficientSavings'))
 			return
 		}
 
@@ -121,26 +127,28 @@ const Savings = ({ route }) => {
 				? await savingApi.deposit(amount)
 				: await savingApi.withdraw(amount)
 			if (res.success) {
-				toast.success(modalType === 'deposit' ? 'Depósito realizado' : 'Retiro realizado')
+				toast.success(modalType === 'deposit' ? t('invest.savings.toasts.depositDone') : t('invest.savings.toasts.withdrawDone'))
 				dispatchModal({ type: 'close' })
 				// Invalidar la raíz de ahorros refresca resumen y movimientos aquí,
-				// en el dashboard de Invest y en la página 2 del BalanceCard
+				// en el dashboard de Invest y en la página 2 del BalanceCard. La
+				// invalidación de ['home'] cubre el feed y ['home','profile']: su
+				// efecto vuelca el perfil (y el saldo nuevo) en AuthContext
 				queryClient.invalidateQueries({ queryKey: ['savings'] })
-				updateUser()
+				queryClient.invalidateQueries({ queryKey: ['home'] })
+				// Recorte a página 1 antes de invalidar: cada lista infinita del
+				// histórico refresca con UNA petición, no una por página cargada
+				queryClient.setQueriesData({ queryKey: ['transactions'] }, trimToFirstPage)
+				queryClient.invalidateQueries({ queryKey: ['transactions'] })
 			} else {
-				toast.error(res.error || 'Error en la operación')
+				toast.error(res.error || t('invest.savings.toasts.operationError'))
 			}
 		} catch (e) {
-			toast.error(e.message || 'Error de red')
+			toast.error(e.message || t('invest.savings.toasts.networkError'))
 		} finally { dispatchModal({ type: 'setLoading', loading: false }) }
 	}
 
 	if (isLoading) return <QPLoader />
 
-	// El balance puede ser negativo (deuda gestionada desde admin): se muestra
-	// en danger con el signo antes del símbolo
-	const isDebt = savingsBalance < 0
-	const balance = formatMoney(savingsBalance)
 	const rate = savings?.currentRate || 0
 	const totalDeposited = Number(savings?.totalDeposited || savings?.total_deposited || 0).toFixed(2)
 	const totalWithdrawn = Number(savings?.totalWithdrawn || savings?.total_withdrawn || 0).toFixed(2)
@@ -158,9 +166,12 @@ const Savings = ({ route }) => {
 					<View style={[styles.heroIcon, { backgroundColor: theme.colors.primary + '15' }]}>
 						<FontAwesome6 name="vault" size={28} color={theme.colors.primary} iconStyle="solid" />
 					</View>
-					<QPFitText style={[textStyles.amount, styles.heroBalance, isDebt && { color: theme.colors.danger }]}>{balance}</QPFitText>
+					{/* Mismo particle que el BalanceCard del Home: símbolo gris menor,
+					    cifras en negro/blanco (o danger si hay deuda — QPBalance lo
+					    detecta por el prefijo "-") */}
+					<QPBalance formattedAmount={savingsBalance.toFixed(2)} fontSize={60} theme={theme} style={styles.heroBalance} />
 					<Text style={[styles.heroRate, { color: theme.colors.secondaryText, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.regular }]}>
-						<Text style={{ color: theme.colors.successText, fontFamily: theme.typography.fontFamily.semiBold }}>{rate}%</Text> anual
+						<Text style={{ color: theme.colors.successText, fontFamily: theme.typography.fontFamily.semiBold }}>{rate}%</Text> {t('invest.common.perYear')}
 					</Text>
 				</View>
 
@@ -169,7 +180,7 @@ const Savings = ({ route }) => {
 					{/* Mismo lenguaje que las pills del morph del BalanceCard:
 					    squircle, 56 de alto y el verde del servicio de ahorro */}
 					<QPButton
-						title="Depositar"
+						title={t('invest.common.deposit')}
 						icon="arrow-down"
 						onPress={() => openModal('deposit')}
 						style={[styles.actionButton, { backgroundColor: theme.colors.successFill }]}
@@ -177,7 +188,7 @@ const Savings = ({ route }) => {
 						iconColor={theme.colors.successFillText}
 					/>
 					<QPButton
-						title="Retirar"
+						title={t('invest.common.withdraw')}
 						icon="arrow-up"
 						onPress={() => openModal('withdraw')}
 						style={[styles.actionButton, { backgroundColor: theme.colors.successFill }]}
@@ -189,9 +200,9 @@ const Savings = ({ route }) => {
 				{/* Stats */}
 				{(Number(totalDeposited) > 0 || Number(totalWithdrawn) > 0 || Number(totalEarned) > 0) && (
 					<View style={[styles.statsCard, { backgroundColor: theme.colors.surface }, theme.mode === 'light' && styles.cardBorder(theme)]}>
-						<StatRow label="Total depositado" value={`$${totalDeposited}`} theme={theme} />
-						<StatRow label="Total retirado" value={`$${totalWithdrawn}`} theme={theme} />
-						<StatRow label="Ganancias" value={`$${totalEarned}`} theme={theme} valueColor={theme.colors.successText} isLast />
+						<StatRow label={t('invest.savings.totalDeposited')} value={`$${totalDeposited}`} theme={theme} />
+						<StatRow label={t('invest.savings.totalWithdrawn')} value={`$${totalWithdrawn}`} theme={theme} />
+						<StatRow label={t('invest.savings.earnings')} value={`$${totalEarned}`} theme={theme} valueColor={theme.colors.successText} isLast />
 					</View>
 				)}
 
@@ -199,7 +210,7 @@ const Savings = ({ route }) => {
 				<View style={[styles.separator, { borderBottomColor: theme.colors.border + '40' }]} />
 
 				{/* Activity */}
-				<Text style={[textStyles.h3, styles.sectionTitle]}>Actividad</Text>
+				<Text style={[textStyles.h3, styles.sectionTitle]}>{t('invest.savings.activity')}</Text>
 				{transactions.length > 0 ? (
 					<View style={[styles.activityCard, { backgroundColor: theme.colors.surface }, theme.mode === 'light' && styles.cardBorder(theme)]}>
 						{transactions.map((tx, index) => (
@@ -210,7 +221,7 @@ const Savings = ({ route }) => {
 					<View style={styles.emptyActivity}>
 						<FontAwesome6 name="clock-rotate-left" size={32} color={theme.colors.secondaryText + '60'} iconStyle="solid" />
 						<Text style={[styles.emptyText, { color: theme.colors.secondaryText, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.regular }]}>
-							Las operaciones aparecerán aquí
+							{t('invest.savings.emptyActivity')}
 						</Text>
 					</View>
 				)}
@@ -222,13 +233,13 @@ const Savings = ({ route }) => {
 				<View style={styles.disclaimer}>
 					<FontAwesome6 name="shield-halved" size={20} color={theme.colors.secondaryText + '80'} iconStyle="solid" />
 					<Text style={[styles.disclaimerText, { color: theme.colors.tertiaryText, fontSize: theme.typography.fontSize.xs, fontFamily: theme.typography.fontFamily.regular }]}>
-						El servicio de ahorros de QvaPay genera intereses sobre tu balance depositado. Los fondos pueden ser retirados en cualquier momento. Las tasas de interés están sujetas a cambios.
+						{t('invest.savings.disclaimer')}
 					</Text>
 					<Text
 						style={[styles.disclaimerLink, { color: theme.colors.primary, fontSize: theme.typography.fontSize.xs, fontFamily: theme.typography.fontFamily.medium }]}
 						onPress={() => Linking.openURL(ROUTES.TERMS_AND_CONDITIONS)}
 					>
-						Términos del servicio
+						{t('invest.savings.termsOfService')}
 					</Text>
 				</View>
 			</ScrollView>
@@ -236,14 +247,20 @@ const Savings = ({ route }) => {
 			{/* Deposit / Withdraw Modal */}
 			<Modal visible={!!modalType} transparent animationType="fade" statusBarTranslucent onRequestClose={() => !modalLoading && dispatchModal({ type: 'close' })}>
 				{/* Overlay + card canónicos del theme (el overlay trae el padding
-				    horizontal que mantiene la card dentro de los márgenes) */}
-				<Pressable style={containerStyles.modalOverlay} onPress={() => !modalLoading && dispatchModal({ type: 'close' })}>
-					<Pressable onPress={() => { }} style={[containerStyles.modalCard, { maxHeight: windowHeight * 0.75 }]}>
+				    horizontal que mantiene la card dentro de los márgenes). Con el
+				    teclado abierto el overlay cede su altura como paddingBottom para
+				    re-centrar la card en el espacio restante — KeyboardAvoidingView
+				    no es fiable dentro de un Modal statusBarTranslucent en Android */}
+				<Pressable
+					style={[containerStyles.modalOverlay, keyboardVisible && { paddingBottom: keyboardHeight + 16 }]}
+					onPress={() => !modalLoading && dispatchModal({ type: 'close' })}
+				>
+					<Pressable onPress={() => { }} style={[containerStyles.modalCard, { maxHeight: keyboardVisible ? windowHeight - keyboardHeight - 48 : windowHeight * 0.75 }]}>
 
 						{/* Header */}
 						<View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
 							<Text style={[textStyles.h4, { color: theme.colors.primaryText }]}>
-								{modalType === 'deposit' ? 'Depositar' : 'Retirar'}
+								{modalType === 'deposit' ? t('invest.common.deposit') : t('invest.common.withdraw')}
 							</Text>
 							<Pressable onPress={() => !modalLoading && dispatchModal({ type: 'close' })} hitSlop={8}>
 								<FontAwesome6 name="xmark" size={20} color={theme.colors.secondaryText} iconStyle="solid" />
@@ -253,18 +270,19 @@ const Savings = ({ route }) => {
 						{/* Available balance hint */}
 						<Text style={{ color: theme.colors.secondaryText, fontSize: theme.typography.fontSize.xs, fontFamily: theme.typography.fontFamily.regular, textAlign: 'center', marginBottom: 8 }}>
 							{modalType === 'deposit'
-								? `Disponible: ${formatMoney(checkingBalance)}`
-								: `En ahorros: ${formatMoney(savingsBalance)}`
+								? t('invest.savings.availableBalance', { amount: formatMoney(checkingBalance) })
+								: t('invest.savings.inSavings', { amount: formatMoney(savingsBalance) })
 							}
 						</Text>
 
 						{/* Amount input */}
 						<View style={{ alignItems: 'center', marginBottom: 24 }}>
 							<View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-								<Text style={{ color: theme.colors.primaryText, fontSize: 40, fontFamily: theme.typography.fontFamily.semiBold }}>$</Text>
+								{/* Símbolo al patrón de QPBalance: gris medio y un paso menor que las cifras */}
+								<Text style={{ color: theme.colors.secondaryText, fontSize: theme.typography.fontSize.xxxl, fontFamily: theme.typography.fontFamily.semiBold, marginRight: 4 }}>$</Text>
 								<TextInput
 									value={modalAmount}
-									onChangeText={(amount) => dispatchModal({ type: 'setAmount', amount })}
+									onChangeText={(amount) => dispatchModal({ type: 'setAmount', amount: sanitizeAmountInput(amount) })}
 									placeholder="0.00"
 									placeholderTextColor={theme.colors.tertiaryText}
 									keyboardType="decimal-pad"
@@ -291,16 +309,16 @@ const Savings = ({ route }) => {
 							})}
 							style={{ alignSelf: 'center', marginBottom: 24 }}
 						>
-							<Text style={{ color: theme.colors.primary, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.semiBold }}>Usar máximo</Text>
+							<Text style={{ color: theme.colors.primary, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.semiBold }}>{t('invest.savings.useMax')}</Text>
 						</Pressable>
 
 						{/* Submit */}
 						<QPButton
-							title={modalType === 'deposit' ? 'Depositar' : 'Retirar'}
+							title={modalType === 'deposit' ? t('invest.common.deposit') : t('invest.common.withdraw')}
 							icon={modalType === 'deposit' ? 'arrow-down' : 'arrow-up'}
 							onPress={handleModalSubmit}
 							loading={modalLoading}
-							disabled={modalLoading || !modalAmount || parseFloat(modalAmount) < 1}
+							disabled={modalLoading || !modalAmount || parseAmountInput(modalAmount) < 1}
 						/>
 
 					</Pressable>
@@ -319,13 +337,15 @@ const StatRow = ({ label, value, theme, valueColor, isLast }) => (
 	</View>
 )
 
+// Las etiquetas son claves i18n resueltas en render (constante de módulo)
 const txConfig = {
-	deposit: { icon: 'arrow-down', color: '#10B981', label: 'Depósito' },
-	withdrawal: { icon: 'arrow-up', color: '#F59E0B', label: 'Retiro' },
-	earning: { icon: 'coins', color: '#8B5CF6', label: 'Ganancia' },
+	deposit: { icon: 'arrow-down', color: '#10B981', labelKey: 'invest.savings.txTypes.deposit' },
+	withdrawal: { icon: 'arrow-up', color: '#F59E0B', labelKey: 'invest.savings.txTypes.withdrawal' },
+	earning: { icon: 'coins', color: '#8B5CF6', labelKey: 'invest.savings.txTypes.earning' },
 }
 
 const ActivityRow = ({ tx, theme, isLast }) => {
+	const { t } = useTranslation()
 	const config = txConfig[tx.type] || txConfig.deposit
 	const isPositive = tx.type === 'deposit' || tx.type === 'earning'
 	const sign = isPositive ? '+' : '-'
@@ -336,7 +356,7 @@ const ActivityRow = ({ tx, theme, isLast }) => {
 				<FontAwesome6 name={config.icon} size={14} color={config.color} iconStyle="solid" />
 			</View>
 			<View style={styles.activityInfo}>
-				<Text style={[styles.activityLabel, { color: theme.colors.primaryText, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.medium }]}>{tx.description || config.label}</Text>
+				<Text style={[styles.activityLabel, { color: theme.colors.primaryText, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.medium }]}>{tx.description || t(config.labelKey)}</Text>
 				<Text style={[styles.activityDate, { color: theme.colors.tertiaryText, fontSize: theme.typography.fontSize.xs, fontFamily: theme.typography.fontFamily.regular }]}>{timeAgo(tx.createdAt)}</Text>
 			</View>
 			<Text style={[styles.activityAmount, { color: isPositive ? theme.colors.successText : theme.colors.primaryText, fontSize: theme.typography.fontSize.sm, fontFamily: theme.typography.fontFamily.semiBold }]}>
@@ -367,7 +387,9 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		marginBottom: 16,
 	},
+	// QPBalance trae el alto/margen del keypad — aquí el héroe es más compacto
 	heroBalance: {
+		height: 'auto',
 		marginBottom: 4,
 	},
 	heroRate: {},

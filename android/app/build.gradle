@@ -87,7 +87,7 @@ react {
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
-def enableProguardInReleaseBuilds = false
+def enableProguardInReleaseBuilds = true
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -136,6 +136,7 @@ android {
         release {
             signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
+            shrinkResources enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
@@ -153,4 +154,11 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+}
+
+// fast-image arrastra com.caverock:androidsvg (jar) y el SDK de Didit la MISMA
+// librería como com.caverock:androidsvg-aar → checkDuplicateClasses revienta.
+// Se excluye el jar plano: el aar sirve las mismas clases 1.4 a ambos.
+configurations.all {
+    exclude group: "com.caverock", module: "androidsvg"
 }

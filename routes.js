@@ -74,6 +74,7 @@ export const ROUTES = {
 	REFERALS: "Referals",
 	THEME: "Theme",
 	FONT_SIZE: "FontSize",
+	LANGUAGE: "Language",
 	USERDATA: "Userdata",
 	PHONE: "Phone",
 	TELEGRAM: "Telegram",
@@ -88,6 +89,8 @@ export const ROUTES = {
 	APP_LOCK: "AppLock",
 	PASSKEYS: "Passkeys",
 	ROUNDUP: "Roundup",
+	ENTERPRISE: "Enterprise",
+	ENTERPRISE_REGISTER: "EnterpriseRegister",
 
 	// Invest Screens
 	SAVINGS_SCREEN: "Savings",

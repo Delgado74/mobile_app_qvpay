@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, useReducer } from 'react'
 import { View, Text } from 'react-native'
+import { useTranslation } from 'react-i18next'
 
 // Theme
 import { useTheme } from '../../theme/ThemeContext'
@@ -16,6 +17,7 @@ import WithdrawAccountFields from './WithdrawAccountFields'
 import WithdrawDestinationSelector from './WithdrawDestinationSelector'
 import PinConfirmStep from '../transaction/PinConfirmStep'
 import { isCryptoCoin } from './withdrawDestination'
+import { calculateFee, grossFromNet, getSelectFeePct, keyFromFieldName } from './withdrawFees'
 import useCoins from '../../hooks/useCoins'
 import usePinEntry from '../../hooks/usePinEntry'
 
@@ -28,7 +30,7 @@ import apiClient from '../../api/client'
 import { withdrawApi } from '../../api/withdrawApi'
 
 // Idempotencia: clave estable por intento — un reintento tras timeout no duplica el débito
-import { makeIdempotencyKey, callWithDuplicateRetry, isNetworkFailure, SAFE_RETRY_HINT } from '../../helpers/idempotency'
+import { makeIdempotencyKey, callWithDuplicateRetry, isNetworkFailure, safeRetryHint } from '../../helpers/idempotency'
 
 // User Context
 import { useAuth } from '../../auth/AuthContext'
@@ -48,8 +50,6 @@ const RECENT_WITHDRAW_KEY = 'qp_recent_withdraw_coins'
 // Mínimo de sats por redención (espejo de MIN_SATS_REDEEM en el backend)
 const MIN_SATS_REDEEM = 100
 
-const keyFromFieldName = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
-
 // USD (neto) -> cantidad en coin
 const usdToCoin = (usdNet, coin) => {
 	if (!coin) return 0
@@ -64,22 +64,6 @@ const coinToUsd = (coinAmount, coin) => {
 	const price = Number(coin.price)
 	if (!coin.stable && price > 0) return coinAmount * price
 	return coinAmount
-}
-
-// Fee for a gross USD amount on a coin
-const calculateFee = (amount, coin) => {
-	if (!coin) return 0
-	const feePercent = Number(coin.fee_out) || 0
-	if (Array.isArray(coin.fee_out_fixed) && coin.fee_out_fixed.length >= 2) {
-		const threshold = Number(coin.fee_out_fixed[0]) || 0
-		const fixedAmount = Number(coin.fee_out_fixed[1]) || 0
-		if (amount < threshold) { return fixedAmount }
-		const percentageFee = (amount * feePercent) / 100
-		return Math.round(percentageFee * 100) / 100
-	}
-	const feeFixed = Number(coin.fee_out_fixed) || 0
-	const percentageFee = (amount * feePercent) / 100
-	return Math.round((percentageFee + feeFixed) * 100) / 100
 }
 
 // Generic field setter for the related-state slices below
@@ -114,6 +98,10 @@ const Withdraw = ({ navigation, route }) => {
 	// Contexts
 	const { user, updateUser } = useAuth()
 	const { coins: coinCatalog, isLoading: loadingCoins } = useCoins('out')
+	const { t } = useTranslation()
+
+	// GOLD paga fee_out_gold en el servidor — la vista previa debe usar la misma tarifa
+	const isGold = !!user?.golden_check
 
 	// Gate de KYC — intercepta antes del paso de PIN
 	const { requireKyc, gateVisible, gateMessage, closeGate } = useKycGate()
@@ -240,7 +228,7 @@ const Withdraw = ({ navigation, route }) => {
 		setAmountQUSD(value)
 		const num = Number(value)
 		if (selectedCoin && !isNaN(num) && num > 0) {
-			const totalFee = calculateFee(num, selectedCoin)
+			const totalFee = calculateFee(num, selectedCoin, { isGold, selectFeePct })
 			const netUsd = num - totalFee
 			const netInCoin = usdToCoin(netUsd, selectedCoin)
 			setAmountCoin(netInCoin > 0 ? netInCoin.toFixed(coinDecimals) : '')
@@ -255,21 +243,7 @@ const Withdraw = ({ navigation, route }) => {
 		const coinAmt = Number(value)
 		if (selectedCoin && !isNaN(coinAmt) && coinAmt > 0) {
 			const netUsd = coinToUsd(coinAmt, selectedCoin)
-			const feePercent = Number(selectedCoin?.fee_out) || 0
-			let requiredQUSD
-
-			if (Array.isArray(selectedCoin?.fee_out_fixed) && selectedCoin.fee_out_fixed.length >= 2) {
-				const threshold = Number(selectedCoin.fee_out_fixed[0]) || 0
-				const fixedAmount = Number(selectedCoin.fee_out_fixed[1]) || 0
-				const withPercentageFee = feePercent > 0 ? netUsd / (1 - feePercent / 100) : netUsd
-				if (withPercentageFee >= threshold) { requiredQUSD = withPercentageFee }
-				else { requiredQUSD = netUsd + fixedAmount }
-			} else {
-				const feeFixed = Number(selectedCoin?.fee_out_fixed) || 0
-				if (feePercent > 0) { requiredQUSD = (netUsd + feeFixed) / (1 - feePercent / 100) }
-				else { requiredQUSD = netUsd + feeFixed }
-			}
-
+			const requiredQUSD = grossFromNet(netUsd, selectedCoin, { isGold, selectFeePct })
 			setAmountQUSD(requiredQUSD > 0 ? String(Math.round(requiredQUSD * 100) / 100) : '')
 		} else {
 			setAmountQUSD('')
@@ -286,6 +260,28 @@ const Withdraw = ({ navigation, route }) => {
 			return []
 		}
 	}, [selectedCoin])
+
+	// Recargo % por opción elegida en campos `select` (p. ej. logística por
+	// provincia de USDCASH) — el servidor lo suma al fee, la vista previa también
+	const selectFeePct = useMemo(() => getSelectFeePct(workingFields, workingForm), [workingFields, workingForm])
+
+	// Fee total de la vista previa (para el desglose bajo la tarjeta de monto)
+	const previewFee = useMemo(() => {
+		const num = Number(amountQUSD)
+		if (!selectedCoin || isNaN(num) || num <= 0) return 0
+		return calculateFee(num, selectedCoin, { isGold, selectFeePct })
+	}, [amountQUSD, selectedCoin, isGold, selectFeePct])
+
+	// Elegir provincia (o refrescar el precio de la coin) cambia el fee después
+	// de tecleado el monto: se re-deriva el lado "Recibir" desde el bruto vigente
+	const resyncReceiveAmount = useEffectEvent(() => {
+		const num = Number(amountQUSD)
+		if (!selectedCoin || isNaN(num) || num <= 0) return
+		const totalFee = calculateFee(num, selectedCoin, { isGold, selectFeePct })
+		const netInCoin = usdToCoin(num - totalFee, selectedCoin)
+		setAmountCoin(netInCoin > 0 ? netInCoin.toFixed(coinDecimals) : '')
+	})
+	useEffect(() => { resyncReceiveAmount() }, [selectFeePct, selectedCoin])
 
 	const isFormValid = useMemo(() => {
 		if (!selectedCoin) { return false }
@@ -312,7 +308,8 @@ const Withdraw = ({ navigation, route }) => {
 		if (amountQUSD) {
 			const num = Number(amountQUSD)
 			if (!isNaN(num) && num > 0) {
-				const totalFee = calculateFee(num, coin)
+				// El form se resetea con la moneda nueva — sin recargo de select aún
+				const totalFee = calculateFee(num, coin, { isGold })
 				const netUsd = num - totalFee
 				const netInCoin = usdToCoin(netUsd, coin)
 				const decimals = Number.isFinite(Number(coin?.decimals)) && Number(coin?.decimals) >= 0 ? Number(coin.decimals) : 2
@@ -328,19 +325,19 @@ const Withdraw = ({ navigation, route }) => {
 			setSendingPin(true)
 			const result = await withdrawApi.requestPin()
 			if (result.success) {
-				toast.success('PIN enviado', { description: 'Revisa tu correo electrónico' })
+				toast.success(t('withdraw.index.toasts.pinSent.title'), { description: t('withdraw.index.toasts.pinSent.description') })
 			} else {
-				toast.error(result.error || 'No se pudo enviar el PIN')
+				toast.error(result.error || t('withdraw.index.toasts.pinSendFailed'))
 			}
 		} catch (err) {
-			toast.error('Error al solicitar el PIN')
+			toast.error(t('withdraw.index.toasts.pinRequestError'))
 		} finally { setSendingPin(false) }
 	}
 
 	// Submit withdraw with PIN
 	const handleWithdraw = async () => {
 		if (!pin || pin.length !== codeLength) {
-			toast.error(twoFactorMethod === 'pin' ? 'Ingresa un PIN de 4 dígitos' : 'Ingresa un código OTP de 6 dígitos')
+			toast.error(twoFactorMethod === 'pin' ? t('withdraw.index.toasts.enterPin') : t('withdraw.index.toasts.enterOtp'))
 			return
 		}
 
@@ -365,12 +362,12 @@ const Withdraw = ({ navigation, route }) => {
 			if (result.success) {
 				idempotencyKeyRef.current = makeIdempotencyKey()
 				if (sourceSats) {
-					toast.success('Redención procesada', { description: `Se han redimido ${Number(amountSats).toLocaleString()} sats` })
+					toast.success(t('withdraw.index.toasts.redeemed.title'), { description: t('withdraw.index.toasts.redeemed.description', { sats: Number(amountSats).toLocaleString() }) })
 					// El backend devuelve los sats restantes fresh — reflejarlos sin refetch
 					const satoshisLeft = result.data?.data?.satoshis
 					if (typeof satoshisLeft === 'number') { updateUser({ satoshis: satoshisLeft }) }
 				} else {
-					toast.success('Extracción procesada', { description: `Se han extraído $${amountQUSD} QUSD` })
+					toast.success(t('withdraw.index.toasts.withdrawn.title'), { description: t('withdraw.index.toasts.withdrawn.description', { amount: amountQUSD }) })
 					updateUser({ balance: Number(user?.balance || 0) - Number(amountQUSD) })
 				}
 				setShowPinStep(false)
@@ -381,12 +378,12 @@ const Withdraw = ({ navigation, route }) => {
 				setWorkingForm({})
 				navigation.goBack()
 			} else if (isNetworkFailure(result)) {
-				toast.error('Error de red', { description: `${result.error || 'No se ha podido conectar con el servidor'}. ${SAFE_RETRY_HINT}` })
+				toast.error(t('withdraw.index.toasts.networkErrorTitle'), { description: `${result.error || t('errors.network')}. ${safeRetryHint()}` })
 			} else {
-				toast.error(result.error || 'No se pudo completar la extracción')
+				toast.error(result.error || t('withdraw.index.toasts.withdrawFailed'))
 			}
 		} catch (err) {
-			toast.error('Error al procesar la extracción')
+			toast.error(t('withdraw.index.toasts.processError'))
 		} finally { setSendingWithdraw(false) }
 	}
 
@@ -418,7 +415,7 @@ const Withdraw = ({ navigation, route }) => {
 				actions={
 					showPinStep ? (
 						<QPButton
-							title={sourceSats ? `Redimir ${(Number(amountSats) || 0).toLocaleString()} sats` : `Extraer $${amountQUSD} ${currency}`}
+							title={sourceSats ? t('withdraw.index.redeemButton', { sats: (Number(amountSats) || 0).toLocaleString() }) : t('withdraw.index.withdrawButton', { amount: amountQUSD, currency })}
 							onPress={handleWithdraw}
 							disabled={!isFormValid || !pin || pin.length < codeLength}
 							loading={sendingWithdraw}
@@ -429,12 +426,12 @@ const Withdraw = ({ navigation, route }) => {
 						/>
 					) : (
 						<QPButton
-							title="Continuar"
+							title={t('common.actions.continue')}
 							onPress={() => {
 								// Gate preventivo: el backend rechaza retiros > $1000 sin KYC
 								if (!requireKyc({
 									gated: Number(amountQUSD) > KYC_WITHDRAW_THRESHOLD,
-									message: `Los retiros de más de $${KYC_WITHDRAW_THRESHOLD} requieren tener tu identidad verificada. Es rápido y solo se hace una vez.`,
+									message: t('withdraw.index.kycGate', { amount: KYC_WITHDRAW_THRESHOLD }),
 								})) return
 								setShowPinStep(true); setPin('')
 							}}
@@ -453,8 +450,8 @@ const Withdraw = ({ navigation, route }) => {
 					{isBTCLN && availableSats > 0 && (
 						<QPSwitch
 							value={source === 'satoshis' ? 'right' : 'left'}
-							leftText="Saldo"
-							rightText={`⚡ ${availableSats.toLocaleString()} sats`}
+							leftText={t('withdraw.index.sourceBalance')}
+							rightText={t('withdraw.index.sourceSats', { sats: availableSats.toLocaleString() })}
 							leftColor={theme.colors.primary}
 							rightColor="#F7931A"
 							onChange={(side) => setSource(side === 'right' ? 'satoshis' : 'balance')}
@@ -484,10 +481,19 @@ const Withdraw = ({ navigation, route }) => {
 							currency={currency}
 							onOpenCoinPicker={() => setShowCoinPicker(true)}
 							locked={amountLocked}
-							lockedCaption={`Monto fijado por la factura ⚡ ${lnAmountSats.toLocaleString()} sats`}
+							lockedCaption={t('withdraw.index.lockedByInvoice', { sats: lnAmountSats.toLocaleString() })}
 							theme={theme}
 							textStyles={textStyles}
 						/>
+					)}
+
+					{/* Desglose del fee — misma cifra que cobrará el servidor */}
+					{!sourceSats && previewFee > 0 && (
+						<Text style={[textStyles.caption, { color: theme.colors.tertiaryText, marginTop: 6 }]}>
+							{selectFeePct > 0
+								? t('withdraw.index.feeWithLogistics', { fee: previewFee.toFixed(2), pct: selectFeePct })
+								: t('withdraw.index.fee', { fee: previewFee.toFixed(2) })}
+						</Text>
 					)}
 
 					{/* Destino de fondos (solo crypto): wallet propia o terceros (bloqueado) */}
@@ -515,8 +521,8 @@ const Withdraw = ({ navigation, route }) => {
 					{/* Info autoritativa de la factura escaneada (decode del backend, no crítico) */}
 					{isBTCLN && lnInfo?.kind === 'bolt11' && (
 						<Text style={[textStyles.caption, { color: theme.colors.tertiaryText, marginTop: 6 }]}>
-							{lnInfo.description ? `“${lnInfo.description}”` : 'Factura Lightning'}
-							{lnInfo.expires_at ? ` · expira en ${Math.max(0, Math.round((lnInfo.expires_at - Date.now()) / 60000))} min` : ''}
+							{lnInfo.description ? t('withdraw.index.lightningDescription', { description: lnInfo.description }) : t('withdraw.index.lightningInvoice')}
+							{lnInfo.expires_at ? t('withdraw.index.lightningExpires', { minutes: Math.max(0, Math.round((lnInfo.expires_at - Date.now()) / 60000)) }) : ''}
 						</Text>
 					)}
 

@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import i18n from '../i18n'
 
 export const userApi = {
 
@@ -33,29 +34,30 @@ export const userApi = {
 	},
 
 	/**
-	 * Requests a KYC verification session from the DIDIT provider (`POST /user/kyc`).
+	 * Requests a KYC verification session from the identity provider (`POST /user/kyc`).
 	 * Unwraps `response.data.data`, so `data` is the hosted verification URL to open.
+	 * `sessionToken` (when the backend sends it) feeds the native verification SDK;
+	 * without it the caller falls back to opening the hosted URL in the browser.
 	 *
-	 * @returns {Promise<Object>} `{ success, data?, error?, status? }` — `data` is the verification URL string
+	 * @returns {Promise<Object>} `{ success, data?, sessionToken?, error?, status? }` — `data` is the verification URL string
 	 */
 	requestKYCSession: async () => {
 		try {
 			const response = await apiClient.post(`/user/kyc`)
-			return { success: true, data: response.data?.data, status: response.status }
+			return { success: true, data: response.data?.data, sessionToken: response.data?.session_token || null, status: response.status }
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo obtener la sesión de verificación', status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.kycSessionFailed'), status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
 	/**
 	 * Gets the current user's KYC status (`GET /user/kyc`).
-	 * `result` is one of: started, processing, passed, failed.
 	 *
-	 * @returns {Promise<Object>} `{ success, data?, raw?, error?, status? }` — `data` is `{ uuid, KYC: { result, country, birthday, document_url, selfie_url } }`, `raw` the unwrapped response body
+	 * @returns {Promise<Object>} `{ success, data?, raw?, error?, status? }` — `data` is `{ uuid, kyc: boolean, kyc_status: 'none'|'pending'|'approved'|'declined' }`, `raw` the unwrapped response body
 	 */
 	getKYCStatus: async () => {
 		try {
@@ -172,6 +174,53 @@ export const userApi = {
 	},
 
 	/**
+	 * Gets the user's enterprise registrations and their approval status (`GET /user/company`).
+	 * Mirrors the web's Ajustes → Empresa panel.
+	 *
+	 * @returns {Promise<Object>} `{ success, data?, error?, status? }` — `data` is `{ companies: [{ uuid, company_name, director_name, email, activity, employee_count, country, status, statutes_sent, created_at, updated_at }] }`
+	 */
+	getCompanies: async () => {
+		try {
+			const response = await apiClient.get(`/user/company`)
+			return { success: true, data: response.data, status: response.status }
+		} catch (error) { return { success: false, error: error.message, status: error.response?.status } }
+	},
+
+	/**
+	 * Submits an enterprise registration from the app (`POST /user/company`,
+	 * multipart). Same fields as the web /enterprise wizard; the authenticated
+	 * user becomes the company owner. `file` is the statutes PDF from the
+	 * document picker (`{ uri, name }`).
+	 *
+	 * @param {Object} params
+	 * @param {Object<string, string>} params.fields - Flat form fields (see enterpriseForm.buildRegisterFields).
+	 * @param {{uri: string, name?: string}} params.file - Statutes PDF.
+	 * @returns {Promise<Object>} `{ success, data?, error?, status? }` — 409 = solicitud activa/empresa aprobada duplicada
+	 */
+	registerCompany: async ({ fields, file }) => {
+		try {
+			const formData = new FormData()
+			Object.entries(fields).forEach(([key, value]) => {
+				if (value !== undefined && value !== null && value !== '') { formData.append(key, value) }
+			})
+			formData.append('statutes', {
+				uri: file.uri,
+				name: file.name || 'estatutos.pdf',
+				type: 'application/pdf'
+			})
+			const config = { headers: { 'Content-Type': 'multipart/form-data' } }
+			const response = await apiClient.post('/user/company', formData, config)
+			return { success: true, data: response.data, status: response.status }
+		} catch (error) {
+			if (error.response?.data) {
+				const errorData = error.response.data
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.companySubmitFailed'), status: error.response.status }
+			}
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
+		}
+	},
+
+	/**
 	 * Gets referral data — invited users list and earnings (`GET /user/referrals`).
 	 *
 	 * @returns {Promise<Object>} `{ success, data?, error?, status? }`
@@ -240,9 +289,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudieron obtener los métodos de pago', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.paymentMethodsLoadFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -260,9 +309,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo crear el método de pago', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.paymentMethodCreateFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -279,9 +328,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo eliminar el método de pago', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.paymentMethodDeleteFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -298,9 +347,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudieron obtener los contactos', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.contactsLoadFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -318,9 +367,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo agregar el contacto', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.contactAddFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -337,9 +386,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo actualizar el favorito', status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.contactFavoriteFailed'), status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -356,9 +405,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo eliminar el contacto', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.contactDeleteFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -375,9 +424,9 @@ export const userApi = {
 			return { success: true, data: response.data }
 		} catch (error) {
 			if (error.response?.data) {
-				return { success: false, error: error.response.data.error || 'No se pudieron sincronizar los contactos' }
+				return { success: false, error: error.response.data.error || i18n.t('api.user.contactsSyncFailed') }
 			}
-			return { success: false, error: error.message || 'Error de red' }
+			return { success: false, error: error.message || i18n.t('api.common.networkErrorShort') }
 		}
 	},
 
@@ -395,9 +444,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo generar el código 2FA', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.twoFactorGenerateFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -418,9 +467,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo activar el 2FA', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.twoFactorActivateFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -437,9 +486,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo desactivar el 2FA', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.twoFactorDeactivateFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -464,9 +513,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo validar la compra', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.common.purchaseValidateFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 
@@ -494,9 +543,9 @@ export const userApi = {
 		} catch (error) {
 			if (error.response?.data) {
 				const errorData = error.response.data
-				return { success: false, error: errorData.error || errorData.message || 'No se pudo subir la imagen', details: errorData, status: error.response.status }
+				return { success: false, error: errorData.error || errorData.message || i18n.t('api.user.imageUploadFailed'), details: errorData, status: error.response.status }
 			}
-			return { success: false, error: error.message || 'Ha ocurrido un error de red', status: error.response?.status }
+			return { success: false, error: error.message || i18n.t('api.common.networkError'), status: error.response?.status }
 		}
 	},
 

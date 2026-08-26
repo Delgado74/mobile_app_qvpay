@@ -1,6 +1,6 @@
 import { usePreventRemove } from '@react-navigation/native'
 import { useState, useRef, useEffect, useEffectEvent, useLayoutEffect, useReducer } from 'react'
-import { Linking } from 'react-native'
+import { useTranslation } from 'react-i18next'
 
 // Routes
 import { ROUTES } from '../../routes'
@@ -25,8 +25,8 @@ import useStepTransitions from '../../hooks/useStepTransitions'
 // Push notifications (OneSignal permission + flags de prompts)
 import usePushPrompt from '../../hooks/usePushPrompt'
 
-// Nudge de KYC (gracia post-sesión para el banner del Home)
-import { markKycSessionStarted } from '../../hooks/useKycPrompt'
+// Flujo de verificación de identidad nativo (SDK embebido, fallback a navegador)
+import useKycVerification from '../../hooks/useKycVerification'
 
 // Atribución de instalación (Android Install Referrer): código del referidor
 // y source de adquisición capturados en el primer arranque
@@ -86,8 +86,14 @@ function formReducer(state, action) {
  */
 const RegisterScreen = ({ navigation }) => {
 
+	// Idioma activo
+	const { t } = useTranslation()
+
 	// Auth Context
 	const { register, clearError, completeSession } = useAuth()
+
+	// Verificación de identidad nativa (paso kyc del wizard)
+	const { launchKyc } = useKycVerification()
 
 	// Theme variables, dark and light modes
 	const { theme } = useTheme()
@@ -160,10 +166,10 @@ const RegisterScreen = ({ navigation }) => {
 	const nameValid = name.trim().length >= 2 && lastname.trim().length >= 2
 	const emailValid = EMAIL_REGEX.test(email.trim())
 	const passwordRules = [
-		{ ok: password.length >= 8 && password.length <= 20, label: 'Entre 8 y 20 caracteres' },
-		{ ok: /[A-Z]/.test(password) && /[a-z]/.test(password), label: 'Mayúsculas y minúsculas' },
-		{ ok: /\d/.test(password), label: 'Al menos un número' },
-		{ ok: /[!@#$%^&*(),.?":{}|<>]/.test(password), label: 'Un carácter especial (!@#$%…)' },
+		{ ok: password.length >= 8 && password.length <= 20, label: t('auth.register.password.rules.length') },
+		{ ok: /[A-Z]/.test(password) && /[a-z]/.test(password), label: t('auth.register.password.rules.cases') },
+		{ ok: /\d/.test(password), label: t('auth.register.password.rules.number') },
+		{ ok: /[!@#$%^&*(),.?":{}|<>]/.test(password), label: t('auth.register.password.rules.special') },
 	]
 	const passwordValid = passwordRules.every(r => r.ok)
 	const countryData = countries.find(c => c.code === country)
@@ -217,10 +223,10 @@ const RegisterScreen = ({ navigation }) => {
 			if (result.success) {
 				goTo(STEPS.indexOf('emailPin'))
 			} else {
-				toast.error(result.error || 'No se pudo completar el registro')
+				toast.error(result.error || t('auth.register.toasts.registerFailed'))
 			}
 		} catch (err) {
-			toast.error('Error de conexión, por favor intenta de nuevo')
+			toast.error(t('auth.register.toasts.connectionError'))
 		} finally { setIsLoading(false) }
 	}
 
@@ -238,11 +244,11 @@ const RegisterScreen = ({ navigation }) => {
 				await setAuthToken(result.accessToken)
 				goTo(STEPS.indexOf('phone'))
 			} else {
-				toast.error(result.error || 'Código incorrecto, inténtalo de nuevo')
+				toast.error(result.error || t('auth.register.toasts.wrongPin'))
 				setEmailPin('')
 			}
 		} catch (err) {
-			toast.error('Error de conexión durante la verificación')
+			toast.error(t('auth.register.toasts.verificationConnectionError'))
 		} finally {
 			setIsLoading(false)
 			verifyingRef.current = false
@@ -252,22 +258,22 @@ const RegisterScreen = ({ navigation }) => {
 	// Enviar (o reenviar) el código de teléfono vía Telegram
 	const handleSendPhoneCode = async (isResend = false) => {
 		if (phone.trim().length < 7) {
-			toast.error('El número debe tener al menos 7 dígitos')
+			toast.error(t('auth.register.toasts.phoneTooShort'))
 			return
 		}
 		setIsLoading(true)
 		try {
 			const result = await userApi.verifyPhone({ phone: phone.trim(), country, verify: false })
 			if (result.success) {
-				toast.success('Código enviado por Telegram')
+				toast.success(t('auth.register.toasts.codeSentTelegram'))
 				startCountdown(60)
 				if (!isResend) { goTo(STEPS.indexOf('phoneCode')) }
 			} else {
-				const errorMsg = result.error?.error || result.error?.message || result.error || 'No se pudo enviar el código'
+				const errorMsg = result.error?.error || result.error?.message || result.error || t('auth.register.toasts.codeSendFailed')
 				toast.error(String(errorMsg))
 			}
 		} catch (err) {
-			toast.error('No se pudo enviar el código')
+			toast.error(t('auth.register.toasts.codeSendFailed'))
 		} finally { setIsLoading(false) }
 	}
 
@@ -279,15 +285,15 @@ const RegisterScreen = ({ navigation }) => {
 		try {
 			const result = await userApi.verifyPhone({ phone: phone.trim(), country, code: phoneCode, verify: true })
 			if (result.success) {
-				toast.success('Teléfono verificado correctamente')
+				toast.success(t('auth.register.toasts.phoneVerified'))
 				goToKycStep()
 			} else {
-				const errorMsg = result.error?.error || result.error?.message || result.error || 'Código incorrecto'
+				const errorMsg = result.error?.error || result.error?.message || result.error || t('auth.register.toasts.wrongCode')
 				toast.error(String(errorMsg))
 				setPhoneCode('')
 			}
 		} catch (err) {
-			toast.error('Error de conexión durante la verificación')
+			toast.error(t('auth.register.toasts.verificationConnectionError'))
 		} finally {
 			setIsLoading(false)
 			verifyingRef.current = false
@@ -304,28 +310,45 @@ const RegisterScreen = ({ navigation }) => {
 		if (isPushEnabled) { finish() } else { goTo(STEPS.indexOf('push')) }
 	}
 
-	// Abre la sesión de verificación de Didit en el navegador. Los códigos del
-	// backend se mapean a avanzar (400 ya verificado, 409 en revisión, 403
-	// rechazado/max intentos — nada accionable en el wizard) o a reintentar
+	// Lanza el flujo de verificación NATIVO (useKycVerification). Un resultado
+	// terminal avanza el wizard (aprobada/en revisión — nada más que hacer aquí);
+	// cancelar se queda en el paso con el "Ahora no" disponible; solo el fallback
+	// a navegador conserva el estado kycOpened de la vuelta manual
 	const handleStartKyc = async () => {
 		setIsLoading(true)
 		try {
-			const resp = await userApi.requestKYCSession()
-			if (resp.success && resp.data) {
+			const resp = await launchKyc()
+
+			if (resp.kind === 'native') {
+				if (resp.outcome === 'approved') {
+					toast.success(t('auth.register.toasts.kycApproved'))
+					goToPushOrFinish()
+				} else if (resp.outcome === 'pending' || resp.outcome === 'declined') {
+					// declined también se comunica como revisión (política: la revisión
+					// manual la resuelve el equipo, no es un rechazo terminal en el alta)
+					toast.info(t('auth.register.toasts.kycInReview'))
+					goToPushOrFinish()
+				}
+				// cancelled: sin ruido, el paso sigue ofreciendo verificar o "Ahora no"
+			} else if (resp.kind === 'browser') {
 				setKycOpened(true)
-				markKycSessionStarted()
-				await Linking.openURL(resp.data)
-			} else if (resp.status === 409 || resp.status === 400) {
-				if (resp.status === 409) toast.info('Tu verificación está en revisión')
-				goToPushOrFinish()
-			} else if (resp.status === 403) {
-				toast.error(String(resp.error || 'No se pudo iniciar la verificación'))
-				goToPushOrFinish()
+			} else if (resp.kind === 'request-error') {
+				// 400 ya verificado, 409 en revisión, 403 rechazado — nada accionable
+				if (resp.status === 409 || resp.status === 400) {
+					if (resp.status === 409) toast.info(t('auth.register.toasts.kycInReview'))
+					goToPushOrFinish()
+				} else if (resp.status === 403) {
+					toast.error(String(resp.message || t('auth.register.toasts.kycStartFailed')))
+					goToPushOrFinish()
+				} else {
+					toast.error(String(resp.message || t('auth.register.toasts.kycStartFailed')))
+				}
 			} else {
-				toast.error(String(resp.error || 'No se pudo iniciar la verificación'))
+				// sdk-error: reintentable desde el propio paso
+				toast.error(String(resp.message || t('auth.register.toasts.kycStartFailed')))
 			}
 		} catch {
-			toast.error('Error de conexión, por favor intenta de nuevo')
+			toast.error(t('auth.register.toasts.connectionError'))
 		} finally { setIsLoading(false) }
 	}
 
@@ -364,7 +387,7 @@ const RegisterScreen = ({ navigation }) => {
 			finishingRef.current = false
 			setFinishing(false)
 			setIsLoading(false)
-			toast.error('No se pudo completar el registro, intenta de nuevo')
+			toast.error(t('auth.register.toasts.finishFailed'))
 		}
 	}
 

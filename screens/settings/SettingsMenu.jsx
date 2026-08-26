@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { View, Text, Alert, ScrollView, Pressable, Linking, Platform, ActionSheetIOS } from 'react-native'
+import { View, Text, TextInput, Alert, ScrollView, Pressable, Linking, Platform, ActionSheetIOS } from 'react-native'
+import { useTranslation } from 'react-i18next'
 
 // Auth Context
 import { useAuth } from '../../auth/AuthContext'
@@ -28,6 +29,7 @@ import { launchCamera, launchImageLibrary } from 'react-native-image-picker'
 
 // Import settings
 import settings from './settings'
+import { filterSettings } from './settingsSearch'
 
 // Push prompt
 import usePushPrompt from '../../hooks/usePushPrompt'
@@ -55,6 +57,7 @@ const SettingsMenu = ({ navigation }) => {
 	// Contexts
 	const { user, logout, updateUser } = useAuth()
 	const { updateSettings } = useSettings()
+	const { t } = useTranslation()
 	const { theme } = useTheme()
 	const textStyles = createTextStyles(theme)
 	const containerStyles = createContainerStyles(theme)
@@ -62,6 +65,15 @@ const SettingsMenu = ({ navigation }) => {
 
 	// Push prompt
 	const { shouldShowRedDot } = usePushPrompt()
+
+	// Buscador del menú: filtra título RESUELTO (los title del catálogo son
+	// claves de i18n) + keywords bilingües sin acentos (settingsSearch.js).
+	// Mientras hay búsqueda activa solo se muestran los resultados — el perfil,
+	// el logout y el pie quedan fuera para no ensuciar la lista.
+	const [query, setQuery] = useState('')
+	const visibleSettings = filterSettings(settings, query, t)
+	const searching = query.trim().length > 0
+	const noResults = searching && Object.keys(visibleSettings).length === 0
 
 	// Biometric availability for the logout flow — read only when the logout
 	// drawer expands, so a ref avoids re-rendering the whole menu when it resolves.
@@ -86,8 +98,8 @@ const SettingsMenu = ({ navigation }) => {
 		const asset = response.assets?.[0]
 		if (!asset) return
 
-		const label = uploadType === 'cover' ? 'portada' : 'foto'
-		const toastId = toast.info(`Subiendo ${label}...`, { duration: Infinity })
+		const isCover = uploadType === 'cover'
+		const toastId = toast.info(t(isCover ? 'settings.menu.avatar.uploadingCover' : 'settings.menu.avatar.uploadingPhoto'), { duration: Infinity })
 		const result = await userApi.uploadAvatar({
 			file: { uri: asset.uri, type: asset.type || 'image/jpeg', name: asset.fileName || `${uploadType}.jpg` },
 			uploadType
@@ -95,18 +107,18 @@ const SettingsMenu = ({ navigation }) => {
 		toast.dismiss(toastId)
 
 		if (result.success) {
-			const updateField = uploadType === 'cover'
+			const updateField = isCover
 				? { cover_photo_url: result.data?.data?.url }
 				: { image: result.data?.data?.path }
 			updateUser(updateField)
-			toast.success(`${label.charAt(0).toUpperCase() + label.slice(1)} actualizada`)
-		} else { toast.error('Error', { description: result.error || `No se pudo subir la ${label}` }) }
+			toast.success(t(isCover ? 'settings.menu.avatar.coverUpdated' : 'settings.menu.avatar.photoUpdated'))
+		} else { toast.error(t('settings.menu.avatar.errorTitle'), { description: result.error || t(isCover ? 'settings.menu.avatar.uploadFailedCover' : 'settings.menu.avatar.uploadFailedPhoto') }) }
 	}
 
 	// Show action sheet for image selection
 	const showImagePicker = (pickerOptions, uploadType, title) => {
 
-		const options = ['Tomar foto', 'Elegir de galería', 'Cancelar']
+		const options = [t('settings.menu.avatar.takePhoto'), t('settings.menu.avatar.chooseFromGallery'), t('common.actions.cancel')]
 		const cancelButtonIndex = 2
 		const handler = (response) => processImageUpload(response, uploadType)
 
@@ -120,18 +132,30 @@ const SettingsMenu = ({ navigation }) => {
 			)
 		} else {
 			Alert.alert(title, null, [
-				{ text: 'Tomar foto', onPress: () => launchCamera(pickerOptions, handler) },
-				{ text: 'Elegir de galería', onPress: () => launchImageLibrary(pickerOptions, handler) },
-				{ text: 'Cancelar', style: 'cancel' },
+				{ text: t('settings.menu.avatar.takePhoto'), onPress: () => launchCamera(pickerOptions, handler) },
+				{ text: t('settings.menu.avatar.chooseFromGallery'), onPress: () => launchImageLibrary(pickerOptions, handler) },
+				{ text: t('common.actions.cancel'), style: 'cancel' },
 			])
 		}
 	}
 
+	// Estado por item del catálogo: check verde en verificaciones completadas
+	// (celular, Telegram, KYC) y pill "Activo" en la suscripción GOLD vigente
+	const itemStatus = (option) => {
+		switch (option.verifiedKey) {
+			case 'phone': return { verified: !!user?.phone_verified }
+			case 'telegram': return { verified: !!user?.telegram_id }
+			case 'kyc': return { verified: !!user?.kyc }
+			case 'gold': return user?.golden_check ? { pill: t('settings.menu.status.active') } : {}
+			default: return {}
+		}
+	}
+
 	// Edit avatar handler
-	const handleEditAvatar = () => showImagePicker(avatarPickerOptions, 'avatar', 'Cambiar foto de perfil')
+	const handleEditAvatar = () => showImagePicker(avatarPickerOptions, 'avatar', t('settings.menu.avatar.changeProfilePhoto'))
 
 	// Edit cover handler
-	const handleEditCover = () => showImagePicker(coverPickerOptions, 'cover', 'Cambiar foto de portada')
+	const handleEditCover = () => showImagePicker(coverPickerOptions, 'cover', t('settings.menu.avatar.changeCoverPhoto'))
 
 	// Logout function — optionally wipes the biometric credentials first
 	const performLogout = async ({ removeBiometrics = false } = {}) => {
@@ -141,45 +165,80 @@ const SettingsMenu = ({ navigation }) => {
 		}
 		const result = await logout()
 		navigation.reset({ index: 0, routes: [{ name: ROUTES.WELCOME_SCREEN }] })
-		if (!result.success) { Alert.alert('Error', 'No se pudo cerrar sesión. Por favor, inténtalo de nuevo.') }
+		if (!result.success) { Alert.alert(t('settings.menu.avatar.errorTitle'), t('settings.menu.logout.failed')) }
 	}
 
 	return (
 		<View style={containerStyles.container}>
-			<ScrollView style={{ paddingHorizontal: theme.spacing.md }} contentInsetAdjustmentBehavior="never">
+			<ScrollView style={{ paddingHorizontal: theme.spacing.md }} contentInsetAdjustmentBehavior="never" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 
-				<ProfileContainer user={user} onEditAvatar={handleEditAvatar} onEditCover={handleEditCover} />
+				{!searching && <ProfileContainer user={user} onEditAvatar={handleEditAvatar} onEditCover={handleEditCover} />}
 
-				{Object.entries(settings).map(([categoryKey, category]) => {
-					const items = categoryKey === 'notifications' && shouldShowRedDot
-						? category.options.map(opt => ({ ...opt, showBadge: true }))
-						: category.options
-					return <SettingsSection key={categoryKey} title={category.title} items={items} navigation={navigation} />
+				{/* Buscador */}
+				<View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: theme.colors.elevation, borderRadius: 12, borderCurve: 'continuous', paddingHorizontal: 14, height: 42, marginTop: searching ? insets.top + 56 : 6 }}>
+					<FontAwesome6 name="magnifying-glass" size={14} color={theme.colors.secondaryText} iconStyle="solid" />
+					<TextInput
+						value={query}
+						onChangeText={setQuery}
+						placeholder={t('settings.menu.searchPlaceholder')}
+						placeholderTextColor={theme.colors.secondaryText}
+						style={{ flex: 1, paddingVertical: 0, color: theme.colors.primaryText, fontFamily: theme.typography.fontFamily.regular, fontSize: theme.typography.fontSize.md }}
+						autoCorrect={false}
+						autoCapitalize="none"
+						returnKeyType="search"
+						clearButtonMode="while-editing"
+					/>
+					{searching && Platform.OS !== 'ios' && (
+						<Pressable onPress={() => setQuery('')} hitSlop={8}>
+							<FontAwesome6 name="circle-xmark" size={15} color={theme.colors.secondaryText} iconStyle="solid" />
+						</Pressable>
+					)}
+				</View>
+
+				{noResults && (
+					<View style={{ alignItems: 'center', paddingVertical: 40, gap: 10 }}>
+						<FontAwesome6 name="magnifying-glass" size={28} color={theme.colors.secondaryText} iconStyle="solid" />
+						<Text style={[textStyles.h5, { color: theme.colors.secondaryText, textAlign: 'center' }]}>
+							{t('settings.menu.noResults', { query: query.trim() })}
+						</Text>
+					</View>
+				)}
+
+				{Object.entries(visibleSettings).map(([categoryKey, category]) => {
+					// Los title del catálogo son claves de i18n: se resuelven AQUÍ para
+					// que SettingsSection/SettingsItem (ui/) sigan recibiendo strings
+					const items = category.options.map(option => ({
+						...option,
+						title: t(option.title),
+						...itemStatus(option),
+						...(categoryKey === 'notifications' && shouldShowRedDot ? { showBadge: true } : {}),
+					}))
+					return <SettingsSection key={categoryKey} title={t(category.title)} items={items} navigation={navigation} />
 				})}
 
-				<AlertDrawer
-					buttonLabel="Cerrar sesión"
-					title="Cerrar sesión"
+				{!searching && <AlertDrawer
+					buttonLabel={t('settings.menu.logout.button')}
+					title={t('settings.menu.logout.button')}
 					icon="right-from-bracket"
 					description={logoutKeepsBiometrics
-						? '¿Deseas mantener el acceso biométrico para la próxima vez?'
-						: '¿Estás seguro de querer cerrar sesión?'}
-					confirmLabel={logoutKeepsBiometrics ? 'Eliminar todo' : undefined}
+						? t('settings.menu.logout.keepBiometricsQuestion')
+						: t('settings.menu.logout.confirmQuestion')}
+					confirmLabel={logoutKeepsBiometrics ? t('settings.menu.logout.deleteAll') : undefined}
 					onConfirm={() => performLogout({ removeBiometrics: logoutKeepsBiometrics })}
-					cancelLabel={logoutKeepsBiometrics ? 'Mantener biometría' : 'Cancelar'}
+					cancelLabel={logoutKeepsBiometrics ? t('settings.menu.logout.keepBiometrics') : t('common.actions.cancel')}
 					onCancel={logoutKeepsBiometrics ? () => performLogout() : undefined}
 					onBeforeExpand={() => setLogoutKeepsBiometrics(biometricsActiveRef.current)}
 					style={{ marginTop: 20 }}
-				/>
+				/>}
 
 				{/* Github, Twitter and Instagram accounts */}
-				<View style={{ flexDirection: 'row', justifyContent: 'space-evenly', marginVertical: 20 }}>
+				{!searching && <View style={{ flexDirection: 'row', justifyContent: 'space-evenly', marginVertical: 20 }}>
 					<Pressable onPress={() => Linking.openURL('https://support.qvapay.com')}>
 						<FontAwesome6 name="headset" size={24} style={{ color: theme.colors.contrast }} iconStyle="solid" />
 					</Pressable>
 					<Pressable onPress={async () => {
 						const result = await requestReview()
-						if (!result.shown) toast.info('Valoración no disponible en este momento')
+						if (!result.shown) toast.info(t('settings.menu.reviewUnavailable'))
 					}}>
 						<FontAwesome6 name="star" size={24} style={{ color: theme.colors.contrast }} iconStyle="solid" />
 					</Pressable>
@@ -198,13 +257,13 @@ const SettingsMenu = ({ navigation }) => {
 					<Pressable onPress={() => Linking.openURL('https://youtube.com/@qvapay')}>
 						<FontAwesome6 name="youtube" size={24} style={{ color: theme.colors.contrast }} iconStyle="brand" />
 					</Pressable>
-				</View>
+				</View>}
 
-				<Text style={[textStyles.h6, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 20, marginBottom: insets.bottom }]}>
+				{!searching && <Text style={[textStyles.h6, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 20, marginBottom: insets.bottom }]}>
 					{`QvaPay © ${new Date().getFullYear()} \n`}
 					{`v ${version} build ${buildNumber}\n`}
-					{`Todos los derechos reservados`}
-				</Text>
+					{t('settings.menu.allRightsReserved')}
+				</Text>}
 
 			</ScrollView>
 

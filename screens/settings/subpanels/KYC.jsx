@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { View, Text, StyleSheet, Linking, AppState } from 'react-native'
+import { Trans, useTranslation } from 'react-i18next'
 
 // Theme
 import { useTheme } from '../../../theme/ThemeContext'
@@ -12,8 +13,8 @@ import QPLoader from '../../../ui/particles/QPLoader'
 // API
 import { userApi } from '../../../api/userApi'
 
-// Nudge de KYC (gracia post-sesión para el banner del Home)
-import { markKycSessionStarted } from '../../../hooks/useKycPrompt'
+// Flujo de verificación nativo (SDK embebido, con fallback a navegador)
+import useKycVerification from '../../../hooks/useKycVerification'
 
 // Lottie
 import LottieView from 'lottie-react-native'
@@ -37,18 +38,21 @@ const PENDING_POLL_MS = 12000
  * `GET /user/kyc` → `{ kyc, kyc_status: none|pending|approved|declined }`:
  *
  * - `verified`  — kyc true: Lottie de verificado.
- * - `pending`   — Didit en revisión: sin CTA, polling cada 12s.
+ * - `pending`   — verificación en revisión: sin CTA, polling cada 12s.
  * - `declined`  — rechazada: caso de soporte, sin re-intento self-service
  *                 (el backend responde 403 a nuevas sesiones).
- * - `idle`      — sin verificar: beneficios + CTA que abre la URL hospedada
- *                 de Didit en el navegador (`POST /user/kyc`).
+ * - `idle`      — sin verificar: beneficios + CTA que lanza el flujo NATIVO
+ *                 de verificación (useKycVerification) sin salir de la app.
  *
- * Al volver del navegador (AppState → active tras abrir la sesión) se
- * re-consulta el estado — espejo del recheck por `visibilitychange` de la web.
- * Los códigos del POST se mapean: 409 → pending, 403 → declined/max intentos,
- * 400 → ya verificado (refresca).
+ * El flujo nativo devuelve el resultado en línea (approved/pending/declined →
+ * transición de estado inmediata). Solo en el fallback a navegador (backend
+ * viejo sin session_token) sobrevive el re-check por AppState al volver, y los
+ * códigos del POST se mapean: 409 → pending, 403 → declined, 400 → refresca.
  */
 const KYC = () => {
+
+	// Idioma activo
+	const { t } = useTranslation()
 
 	// Theme
 	const { theme } = useTheme()
@@ -58,9 +62,11 @@ const KYC = () => {
 	// Auth
 	const { user, updateUser } = useAuth()
 
+	// Flujo de verificación nativo
+	const { launchKyc, launching } = useKycVerification()
+
 	// States: 'loading' | 'verified' | 'pending' | 'declined' | 'idle'
 	const [status, setStatus] = useState('loading')
-	const [requesting, setRequesting] = useState(false)
 	const sessionOpenedRef = useRef(false)
 
 	const checkStatus = useCallback(async () => {
@@ -90,7 +96,7 @@ const KYC = () => {
 	// Estado inicial
 	useEffect(() => { checkStatus() }, [checkStatus])
 
-	// Re-check al volver del navegador de Didit
+	// Re-check al volver del navegador (solo aplica al fallback sin SDK)
 	useEffect(() => {
 		const sub = AppState.addEventListener('change', (state) => {
 			if (state === 'active' && sessionOpenedRef.current) {
@@ -107,31 +113,52 @@ const KYC = () => {
 		return () => clearInterval(poll)
 	}, [status, checkStatus])
 
-	// Request verification session URL and open in browser
+	// Lanza el flujo nativo y traduce su resultado al estado de la pantalla
 	const requestVerification = useCallback(async () => {
-		try {
-			setRequesting(true)
-			const resp = await userApi.requestKYCSession()
-			if (resp.success && resp.data) {
-				sessionOpenedRef.current = true
-				markKycSessionStarted()
-				await Linking.openURL(resp.data)
-				return
+		const resp = await launchKyc()
+
+		if (resp.kind === 'native') {
+			if (resp.outcome === 'approved') {
+				setStatus('verified')
+				toast.success(t('settings.kyc.toasts.approved'))
+			} else if (resp.outcome === 'pending') {
+				setStatus('pending')
+				toast.info(t('settings.kyc.toasts.inReview'))
+			} else if (resp.outcome === 'declined') {
+				setStatus('declined')
 			}
+			// cancelled: el usuario cerró el flujo, se queda en idle sin ruido
+			return
+		}
+
+		if (resp.kind === 'browser') {
+			// Fallback a la URL hospedada: el resultado llega al volver (AppState)
+			sessionOpenedRef.current = true
+			return
+		}
+
+		if (resp.kind === 'request-error') {
 			// El backend codifica el estado en el status HTTP
 			if (resp.status === 409) {
 				setStatus('pending')
-				toast.info('Tu verificación está en revisión')
+				toast.info(t('settings.kyc.toasts.inReview'))
 			} else if (resp.status === 403) {
 				setStatus('declined')
 			} else if (resp.status === 400) {
 				checkStatus()
 			} else {
-				toast.error('Error', { description: resp.error || 'No se pudo obtener la sesión de verificación' })
+				toast.error(t('settings.kyc.toasts.errorTitle'), { description: resp.message || t('settings.kyc.toasts.sessionFailed') })
 			}
-		} catch (e) { toast.error('Error', { description: e.message || 'Ha ocurrido un error' }) }
-		finally { setRequesting(false) }
-	}, [checkStatus])
+			return
+		}
+
+		// sdk-error
+		if (resp.errorType === 'cameraAccessDenied') {
+			toast.error(t('settings.kyc.toasts.errorTitle'), { description: t('settings.kyc.toasts.cameraDenied') })
+		} else {
+			toast.error(t('settings.kyc.toasts.errorTitle'), { description: resp.message || t('settings.kyc.toasts.genericError') })
+		}
+	}, [launchKyc, checkStatus, t])
 
 	if (status === 'loading') return <QPLoader />
 
@@ -142,8 +169,8 @@ const KYC = () => {
 				<View style={styles.center}>
 					{/* Android resuelve verified.android.json (sin capas de glow: lottie-android recorta el Gaussian Blur a los bounds de la capa) */}
 					<LottieView source={require('../../../assets/lotties/verified.json')} autoPlay loop={false} style={styles.lottie} />
-					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10, textAlign: 'center' }]}>¡Identidad verificada!</Text>
-					<Text style={[textStyles.h3, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 6 }]}>Gracias por completar la verificación. Ya puedes disfrutar de todos los beneficios.</Text>
+					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10, textAlign: 'center' }]}>{t('settings.kyc.verified.title')}</Text>
+					<Text style={[textStyles.h3, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 6 }]}>{t('settings.kyc.verified.body')}</Text>
 				</View>
 			</View>
 		)
@@ -155,9 +182,9 @@ const KYC = () => {
 			<View style={containerStyles.subContainer}>
 				<View style={styles.center}>
 					<LottieView source={require('../../../assets/lotties/looking.json')} autoPlay loop style={styles.lottie} />
-					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10, textAlign: 'center' }]}>Verificación en revisión</Text>
+					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10, textAlign: 'center' }]}>{t('settings.kyc.pending.title')}</Text>
 					<Text style={[textStyles.h3, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 6 }]}>
-						Estamos revisando tu información. Te avisaremos en cuanto esté lista — normalmente toma solo unos minutos.
+						{t('settings.kyc.pending.body')}
 					</Text>
 				</View>
 			</View>
@@ -172,13 +199,15 @@ const KYC = () => {
 					<View style={[styles.declinedIcon, { backgroundColor: theme.colors.danger + '18' }]}>
 						<FontAwesome6 name="shield-halved" size={40} color={theme.colors.danger} iconStyle="solid" />
 					</View>
-					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 18, textAlign: 'center' }]}>Verificación rechazada</Text>
+					<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 18, textAlign: 'center' }]}>{t('settings.kyc.declined.title')}</Text>
+					{/* La frase vive en UNA clave; el email tocable entra como <0> vía Trans */}
 					<Text style={[textStyles.h3, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 6 }]}>
-						No pudimos completar tu verificación. Escríbenos a{' '}
-						<Text style={{ color: theme.colors.primary }} onPress={() => Linking.openURL('mailto:soporte@qvapay.com')}>
-							soporte@qvapay.com
-						</Text>
-						{' '}y te ayudamos a resolverlo.
+						<Trans
+							i18nKey="settings.kyc.declined.body"
+							components={[
+								<Text style={{ color: theme.colors.primary }} onPress={() => Linking.openURL('mailto:soporte@qvapay.com')} />,
+							]}
+						/>
 					</Text>
 				</View>
 			</View>
@@ -192,23 +221,23 @@ const KYC = () => {
 			<View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
 				<LottieView source={require('../../../assets/lotties/looking.json')} autoPlay loop style={styles.lottie} />
 
-				<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10 }]}>Verificación de identidad</Text>
+				<Text style={[textStyles.h1, { color: theme.colors.primaryText, marginTop: 10 }]}>{t('settings.kyc.idle.title')}</Text>
 				<Text style={[textStyles.h3, { color: theme.colors.secondaryText, textAlign: 'center', marginTop: 6, marginBottom: 24 }]}>
-					Verifica tu identidad para acceder a todos los beneficios de QvaPay.
+					{t('settings.kyc.idle.body')}
 				</Text>
 
 				<View style={[containerStyles.card, { width: '100%' }]}>
-					<BenefitItem icon="arrow-up" text="Límites de transacción más altos" theme={theme} textStyles={textStyles} />
-					<BenefitItem icon="handshake" text="Mejores oportunidades en el P2P" theme={theme} textStyles={textStyles} />
-					<BenefitItem icon="star" text="Acceso a funciones exclusivas" theme={theme} textStyles={textStyles} />
+					<BenefitItem icon="arrow-up" text={t('settings.kyc.idle.benefits.higherLimits')} theme={theme} textStyles={textStyles} />
+					<BenefitItem icon="handshake" text={t('settings.kyc.idle.benefits.betterP2P')} theme={theme} textStyles={textStyles} />
+					<BenefitItem icon="star" text={t('settings.kyc.idle.benefits.exclusiveFeatures')} theme={theme} textStyles={textStyles} />
 				</View>
 			</View>
 
 			<View style={containerStyles.bottomButtonContainer}>
 				<QPButton
-					title={requesting ? 'Abriendo verificación...' : 'Verificar mi identidad'}
+					title={launching ? t('settings.kyc.idle.opening') : t('settings.kyc.idle.verifyButton')}
 					onPress={requestVerification}
-					loading={requesting}
+					loading={launching}
 					textStyle={{ color: theme.colors.almostWhite }}
 				/>
 			</View>
