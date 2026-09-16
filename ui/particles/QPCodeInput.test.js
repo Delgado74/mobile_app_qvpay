@@ -5,7 +5,7 @@
  * mock.contexts (the `this` of each call identifies which box was focused).
  * @jest-environment node
  */
-import { TextInput } from 'react-native'
+import { StyleSheet, TextInput } from 'react-native'
 import { act, create } from 'react-test-renderer'
 
 jest.mock('../../theme/ThemeContext', () => {
@@ -43,6 +43,36 @@ describe('QPCodeInput', () => {
 		await act(async () => { getBoxes(tree)[0].props.onChangeText('5') })
 		expect(onChangeCode).toHaveBeenCalledWith('5')
 		expect(focusedBoxes()).toContain(getBoxes(tree)[1].instance)
+	})
+
+	test('fast typing keeps every digit even if the parent has not re-rendered yet', async () => {
+		const onChangeCode = jest.fn()
+		const onFilled = jest.fn()
+		const tree = await render({ code: '', onChangeCode, onFilled })
+		const boxes = getBoxes(tree)
+		// El padre NO re-renderiza entre pulsaciones (es lo que pasa al teclear rápido):
+		// cada closure sigue viendo `code=''`, así que sin el espejo interno cada dígito
+		// pisaba al anterior y el PIN acababa corrido o incompleto
+		await act(async () => {
+			boxes[0].props.onChangeText('1')
+			boxes[1].props.onChangeText('2')
+			boxes[2].props.onChangeText('3')
+			boxes[3].props.onChangeText('4')
+		})
+		expect(onChangeCode).toHaveBeenLastCalledWith('1234')
+		expect(onFilled).toHaveBeenCalledWith('1234')
+	})
+
+	test('backspace reads the latest value, not the stale prop', async () => {
+		const onChangeCode = jest.fn()
+		const tree = await render({ code: '', onChangeCode })
+		const boxes = getBoxes(tree)
+		await act(async () => {
+			boxes[0].props.onChangeText('1')
+			boxes[1].props.onChangeText('2')
+			boxes[1].props.onKeyPress({ nativeEvent: { key: 'Backspace' } })
+		})
+		expect(onChangeCode).toHaveBeenLastCalledWith('1')
 	})
 
 	test('filters out non-numeric characters', async () => {
@@ -122,5 +152,19 @@ describe('QPCodeInput', () => {
 		focusMock.mockClear()
 		await act(async () => { ref.current.focus(2) })
 		expect(focusedBoxes()).toContain(getBoxes(tree)[2].instance)
+	})
+
+	// Regresión: las cajas son `flex: 1`, cuya base es el contenido. Bajo un padre que
+	// centre en horizontal (LockScreen) la fila se encoge y sin `minWidth` cada caja
+	// vacía queda del ancho del placeholder — el PIN se ve como cuatro rayas
+	test('every box keeps a minimum width so it cannot collapse to a stripe', async () => {
+		const four = await render()
+		for (const box of getBoxes(four)) {
+			expect(StyleSheet.flatten(box.props.style).minWidth).toBeGreaterThan(0)
+		}
+		const six = await render({ length: 6 })
+		for (const box of getBoxes(six)) {
+			expect(StyleSheet.flatten(box.props.style).minWidth).toBeGreaterThan(0)
+		}
 	})
 })

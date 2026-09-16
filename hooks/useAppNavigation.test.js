@@ -30,6 +30,10 @@ jest.mock('../settings/SettingsContext', () => ({ useSettings: jest.fn() }))
 jest.mock('../helpers/playSound', () => jest.fn())
 jest.mock('../helpers/installReferrer', () => ({ consumeInstallReferrer: jest.fn() }))
 jest.mock('../helpers/versionCheck', () => ({ maybePromptUpdate: jest.fn() }))
+// El cliente de queries real arrastra el persister (AsyncStorage) a este entorno node
+jest.mock('../api/queryClient', () => ({
+	queryClient: { invalidateQueries: jest.fn(), setQueriesData: jest.fn() },
+}))
 
 import React from 'react'
 import { act, create } from 'react-test-renderer'
@@ -41,6 +45,7 @@ import { useSettings } from '../settings/SettingsContext'
 import playSound from '../helpers/playSound'
 import { consumeInstallReferrer } from '../helpers/installReferrer'
 import { maybePromptUpdate } from '../helpers/versionCheck'
+import { queryClient } from '../api/queryClient'
 import { useAppNavigation } from './useAppNavigation'
 
 const P2P_UUID = '796a9e71-3d67-4a42-9dc2-02a5d069fa23'
@@ -191,15 +196,12 @@ describe('foreground deep links while unauthenticated', () => {
 })
 
 describe('OneSignal listeners', () => {
-	const makeForegroundEvent = (title, body, data) => ({
-		preventDefault: jest.fn(),
-		getNotification: () => ({
-			title,
-			body,
-			additionalData: data,
-			display: jest.fn(),
-		}),
-	})
+	// La notificación se construye UNA vez: los tests miran su `display`, así que
+	// getNotification() tiene que devolver siempre el mismo objeto
+	const makeForegroundEvent = (title, body, data) => {
+		const notification = { title, body, additionalData: data, display: jest.fn() }
+		return { preventDefault: jest.fn(), notification, getNotification: () => notification }
+	}
 
 	test('foreground notifications become toasts and transaction ones play money_in', async () => {
 		await renderAppNav()
@@ -208,6 +210,43 @@ describe('OneSignal listeners', () => {
 		expect(event.preventDefault).toHaveBeenCalled()
 		expect(playSound).toHaveBeenCalledWith('money_in')
 		expect(toast.info).toHaveBeenCalledWith('Pago recibido', { description: '+$5.00' })
+	})
+
+	// El backend manda `transfer_received` + `transaction_uuid`: con la
+	// comparación vieja ('transaction'/'transfer' + `uuid`) un cobro real sonaba
+	// con el tono genérico
+	test('an incoming transfer push (backend type) plays money_in and refreshes balance + history', async () => {
+		await renderAppNav()
+		const event = makeForegroundEvent('Has recibido una transferencia', '+$5.00', {
+			type: 'transfer_received', transaction_uuid: 't-9',
+		})
+		await act(async () => { oneSignalListeners.foregroundWillDisplay(event) })
+		expect(playSound).toHaveBeenCalledWith('money_in')
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['home'] })
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['transactions'] })
+	})
+
+	// El canal de Android (qp_money_in/qp_money_out) trae el sonido de moneda:
+	// publicar la notificación con la app delante la haría sonar dos veces
+	test('a money push is not displayed in the tray while the app is in foreground', async () => {
+		await renderAppNav()
+		const money = makeForegroundEvent('Cobro', '+$5.00', { type: 'transfer_received', transaction_uuid: 't-9' })
+		const other = makeForegroundEvent('Chat', 'nuevo mensaje', { type: 'p2p_chat', p2p_uuid: 'p-1' })
+		await act(async () => { oneSignalListeners.foregroundWillDisplay(money) })
+		await act(async () => { oneSignalListeners.foregroundWillDisplay(other) })
+		expect(money.notification.display).not.toHaveBeenCalled()
+		expect(other.notification.display).toHaveBeenCalled()
+	})
+
+	test('an outgoing transfer push is not treated as money in', async () => {
+		await renderAppNav()
+		const event = makeForegroundEvent('Transferencia enviada', '-$5.00', {
+			type: 'transfer_sent', transaction_uuid: 't-9',
+		})
+		await act(async () => { oneSignalListeners.foregroundWillDisplay(event) })
+		// Ni money_in ni el tono genérico: el envío ya sonó en SendSuccess
+		expect(playSound).not.toHaveBeenCalled()
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalled()
 	})
 
 	test('other notification types play the generic sound; disabled sounds play nothing', async () => {
@@ -237,6 +276,10 @@ describe('OneSignal listeners', () => {
 		})
 		await click({ type: 'transaction', uuid: 't-1' })
 		expect(navigation.navigate).toHaveBeenCalledWith('Transaction', { uuid: 't-1' })
+		await click({ type: 'transfer_received', transaction_uuid: 't-2' })
+		expect(navigation.navigate).toHaveBeenCalledWith('Transaction', { uuid: 't-2' })
+		await click({ type: 'p2p_applied', p2p_uuid: 'p-2' })
+		expect(navigation.navigate).toHaveBeenCalledWith('P2POffer', { p2p_uuid: 'p-2' })
 		await click({ type: 'p2p', uuid: 'p-1' })
 		expect(navigation.navigate).toHaveBeenCalledWith('P2POffer', { p2p_uuid: 'p-1' })
 		await click({ type: 'transfer' })

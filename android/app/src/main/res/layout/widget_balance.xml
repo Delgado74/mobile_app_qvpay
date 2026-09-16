@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Widget de balance, tamano 4x2 (el layout por defecto del proveedor). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_balance_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="14dp"
-    android:background="#FF0E0E1C">
+    android:background="@drawable/widget_container">
 
-    <!-- Header: QvaPay + QUSD pill -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -18,108 +18,171 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="QvaPay"
-            android:textColor="#FFFFFFFF"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:text="@string/app_name"
+            android:textSize="12sp"
+            android:textColor="@color/widget_secondary_text" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="QUSD"
-            android:textColor="#B3FFFFFF"
             android:textSize="10sp"
-            android:textStyle="bold"
+            android:textColor="@color/widget_secondary_text"
             android:paddingStart="8dp"
             android:paddingEnd="8dp"
             android:paddingTop="3dp"
             android:paddingBottom="3dp"
-            android:background="@drawable/pill_qusd" />
+            android:background="@drawable/widget_pill" />
     </LinearLayout>
 
-    <!-- Spacer -->
-    <View
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />
 
-    <!-- Balance -->
-    <TextView
-        android:id="@+id/balance_amount"
+    <!-- Heroe calcado de QPBalance. Va como DOS bitmaps y no como TextView:
+         el launcher no resuelve recursos de fuente al inflar RemoteViews, asi
+         que android:fontFamily se ignora y Rubik no llegaba nunca. Los pinta
+         BalanceWidget.kt en blanco sobre transparente y el color lo pone el
+         android:tint de aqui, que SI sigue a values-night. -->
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="$0.00"
-        android:textColor="#FFFFFFFF"
-        android:textSize="28sp"
-        android:textStyle="bold" />
+        android:layout_gravity="center_horizontal"
+        android:orientation="horizontal"
+        android:baselineAligned="false"
+        android:gravity="center_vertical">
 
-    <!-- Label -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:text="Balance actual"
-        android:textColor="#73FFFFFF"
-        android:textSize="11sp" />
+        <ImageView
+            android:id="@+id/hero_symbol"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="5dp"
+            android:adjustViewBounds="true"
+            android:tint="@color/widget_secondary_text"
+            android:contentDescription="@null" />
 
-    <!-- Hidden fields for Kotlin compatibility -->
-    <TextView
-        android:id="@+id/balance_username"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:visibility="gone" />
+        <ImageView
+            android:id="@+id/balance_amount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:adjustViewBounds="true"
+            android:tint="@color/widget_primary_text"
+            android:contentDescription="@string/widget_balance_label" />
+    </LinearLayout>
 
-    <TextView
-        android:id="@+id/balance_timestamp"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:visibility="gone" />
-
-    <!-- Spacer -->
-    <View
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />
 
-    <!-- Circular action buttons -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="start|center_vertical">
+        android:orientation="horizontal">
 
-        <FrameLayout
+        <LinearLayout
             android:id="@+id/btn_deposit"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:layout_marginEnd="12dp"
-            android:background="@drawable/circle_deposit">
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_tile">
+
+            <ImageView
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:src="@drawable/ic_widget_deposit"
+                android:contentDescription="@string/widget_action_deposit" />
 
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:text="+"
-                android:textColor="#FF7BFFB1"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:gravity="center" />
-        </FrameLayout>
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="@string/widget_action_deposit"
+                android:textSize="10sp"
+                android:textColor="@color/widget_primary_text"
+                android:maxLines="1" />
+        </LinearLayout>
 
-        <FrameLayout
+        <LinearLayout
             android:id="@+id/btn_withdraw"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:background="@drawable/circle_withdraw">
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:layout_marginStart="10dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_tile">
+
+            <ImageView
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:src="@drawable/ic_widget_withdraw"
+                android:contentDescription="@string/widget_action_withdraw" />
 
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:text="−"
-                android:textColor="#FFDB253E"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:gravity="center" />
-        </FrameLayout>
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="@string/widget_action_withdraw"
+                android:textSize="10sp"
+                android:textColor="@color/widget_primary_text"
+                android:maxLines="1" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_send"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:layout_marginStart="10dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_tile">
+
+            <ImageView
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:src="@drawable/ic_widget_send"
+                android:contentDescription="@string/widget_action_send" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="@string/widget_action_send"
+                android:textSize="10sp"
+                android:textColor="@color/widget_primary_text"
+                android:maxLines="1" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_trade"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:layout_marginStart="10dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_tile">
+
+            <ImageView
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:src="@drawable/ic_widget_trade"
+                android:contentDescription="@string/widget_action_trade" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="@string/widget_action_trade"
+                android:textSize="10sp"
+                android:textColor="@color/widget_primary_text"
+                android:maxLines="1" />
+        </LinearLayout>
     </LinearLayout>
 
 </LinearLayout>
