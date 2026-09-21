@@ -50,6 +50,8 @@ export type Me = {
 	image?: string | null
 	average_rating?: number
 	role?: string
+	/** Flags de features servidos por el backend (rollout remoto). */
+	features?: Record<string, unknown>
 } & Record<string, unknown>
 
 /**
@@ -84,6 +86,8 @@ export type User = {
 	image?: string | null
 	average_rating?: number
 	role?: string
+	/** Flags de features servidos por el backend (rollout remoto). */
+	features?: Record<string, unknown>
 } & Record<string, unknown>
 
 // ---------------------------------------------------------------------------
@@ -132,7 +136,7 @@ export type Coin = {
 }
 
 /**
- * Coin enriquecida por el CLIENTE (investQueries/homeQueries): precio spot
+ * Coin enriquecida por el CLIENTE (cryptoQueries/homeQueries): precio spot
  * sobrescrito + variación calculada contra el histórico. No viene del backend.
  */
 export type EnrichedCoin = Coin & {
@@ -388,4 +392,150 @@ export type Announcement = {
 	dismiss_days: number
 	/** ISO 8601, o null si el aviso no caduca. Lo usa la app para no resucitar uno caducado desde la caché persistida. */
 	ends_at?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Wallet self-custody (historial on-chain vía proxy de qpweb)
+// ---------------------------------------------------------------------------
+
+/** Movimiento on-chain normalizado por `GET /wallet/history` (misma forma en todas las cadenas). */
+export type WalletTx = {
+	/** 'fee' = llamada a contrato propia (enviar un token, approve…): solo se quemó la comisión, `amount` es esa comisión en el nativo. Ausente = transferencia. */
+	kind?: 'transfer' | 'fee'
+	hash: string
+	/** Unix en SEGUNDOS. */
+	time: number
+	direction: 'in' | 'out' | 'self'
+	from: string | null
+	to: string | null
+	/** Decimal humano, siempre positivo ('12.5'). */
+	amount: string
+	symbol: string
+	/** null = nativo. */
+	contract: string | null
+	/** En unidades del nativo de la cadena; null si no se conoce. */
+	fee: string | null
+	status: 'confirmed' | 'pending' | 'failed'
+}
+
+export type WalletHistoryPage = {
+	items: WalletTx[]
+	next_cursor: string | null
+}
+
+// ── Alquiler de energía TRON (`/v2/energy`, se cobra del saldo QvaPay) ──────
+
+/** Plazos que vende el proveedor. Para enviar USDT ahora mismo, `1h` sobra. */
+export type EnergyDuration = '1h' | '1d' | '3d' | '7d'
+
+export type EnergyOrderStatus = 'pending' | 'dispatching' | 'completed' | 'refunded' | 'needs_review'
+
+/** Clave de un monto popular de la tabla de precios (la prosa se traduce en la app). */
+export type EnergyPreset = 'usdt_known' | 'usdt_new'
+
+/** Fila de `GET /v2/energy/prices`: un monto popular para una duración. */
+export type EnergyPriceRow = {
+	preset: EnergyPreset
+	/** Prosa del backend, en español. NO se pinta: el copy sale de i18n por `preset`. */
+	title: string
+	detail: string
+	volume: number
+	duration: EnergyDuration
+	price_usd: number
+	/** Precio por unidad de esa duración, para estimar volúmenes fuera de la tabla. */
+	unit_price_usd: number
+}
+
+export type EnergyPricesPayload = {
+	data: EnergyPriceRow[]
+	meta: {
+		durations: EnergyDuration[]
+		min_volume: number
+		max_volume: number
+		presets: Array<{ key: EnergyPreset, volume: number, title: string, detail: string }>
+		note: string
+	}
+}
+
+/** Cotización congelada (90 s, un solo uso) de `POST /v2/energy/quote`. */
+export type EnergyQuote = {
+	quote_id: string
+	volume: number
+	duration: EnergyDuration
+	price_usd: number
+	expires_at: string
+}
+
+/** Orden de energía tal como la serializa el backend. */
+export type EnergyOrder = {
+	uuid: string
+	resource: string
+	/** Dirección que recibe la delegación: la que FIRMA el envío, no la que recibe los fondos. */
+	target_address: string
+	volume: number
+	duration: EnergyDuration
+	price_usd: number
+	status: EnergyOrderStatus
+	/** Solo legible en `refunded` / `needs_review`. */
+	reason: string | null
+	order_id: string | null
+	txid: string | null
+	explorer: string | null
+	created_at: string
+	completed_at: string | null
+}
+
+// ── Swap saldo QvaPay ↔ activo on-chain (primer par: QUSD en Stacks) ─────────
+
+export type SwapDirection = 'out' | 'in'
+export type SwapStatus = 'pending' | 'dispatching' | 'sent' | 'completed' | 'failed' | 'refunded' | 'needs_review'
+
+/** Fila de `swaps` tal como la sirve `GET /swap/{uuid}` (BigInt como string). */
+export type Swap = {
+	uuid: string
+	pair: string
+	direction: SwapDirection
+	amount: number
+	amount_base: string | null
+	asset: string
+	from_address: string | null
+	to_address: string
+	txid: string | null
+	explorer: string | null
+	status: SwapStatus
+	/** `nonce` | `funds` | `abort` | `cancelled` | `manual`… — legible solo en failed/refunded. */
+	reason: string | null
+	sponsored_fee_ustx: string | null
+	created_at: string
+	updated_at: string
+	sent_at: string | null
+	completed_at: string | null
+	transaction_uuid?: string | null
+}
+
+export type SwapPair = {
+	id: string
+	base: string
+	quote: string
+	rate: number
+	fee_bps: number
+	min: number
+	max: number
+	decimals: number
+	/** `SP….contrato::asset` del par: con esto (y `treasury`) la app construye la tx del IN. */
+	asset: string
+	contract_id: string
+	asset_name: string
+	treasury: string
+	network: string
+	enabled: boolean
+	disabled_reason: string | null
+}
+
+/** `GET /swap/pairs`. */
+export type SwapPairsPayload = {
+	data: SwapPair[]
+	limits: { kyc: boolean, daily: number | null, monthly: number | null, available: number | null, requires_kyc: boolean }
+	sponsor: { daily_per_user: number, used_today: number, remaining_today: number, max_fee_ustx: number }
+	wallet: { stx: string | null }
 }

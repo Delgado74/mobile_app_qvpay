@@ -111,5 +111,15 @@
 	},
 	"announcement": {
 		"loadFailed": "Couldn't load the announcement"
+	},
+	"swap": {
+		"createFailed": "Could not create the swap",
+		"cancelFailed": "Could not cancel the swap"
+	},
+	"energy": {
+		"pricesFailed": "Couldn't load energy prices",
+		"quoteFailed": "Couldn't quote the energy",
+		"rentFailed": "Couldn't rent the energy",
+		"ordersFailed": "Couldn't load your energy orders"
 	}
 }

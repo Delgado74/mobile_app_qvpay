@@ -19,11 +19,21 @@
 		"orderNumber": "Order #{{id}}",
 		"assistedShopping": "Assisted shopping",
 		"assistedCheckout": "Confirm purchase",
-		"assistedOrders": "My orders"
+		"assistedOrders": "My orders",
+		"walletImport": "Import wallet",
+		"walletReceive": "Receive",
+		"walletManageAssets": "Manage assets",
+		"walletSend": "Send",
+		"walletSendConfirm": "Confirm send",
+		"walletTxDetail": "Transaction",
+		"walletSwap": "Swap",
+		"walletSwapStatus": "Swap status",
+		"tronEnergy": "TRON energy",
+		"energyOrders": "Energy purchases"
 	},
 	"tabs": {
 		"home": "Home",
-		"invest": "Invest",
+		"crypto": "Crypto",
 		"send": "Send",
 		"p2p": "P2P",
 		"store": "Store"
