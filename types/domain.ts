@@ -485,6 +485,62 @@ export type EnergyOrder = {
 	completed_at: string | null
 }
 
+// ── Patrocinio de fees on-chain (QvaPay paga el gas de un envío del usuario) ─
+
+/**
+ * Permiso acotado a UN envío. `fee_payer` viaja desde el backend a propósito: llevar
+ * esa dirección en la app obligaría a publicar versión para rotar la tesorería.
+ */
+export type SponsorGrant = {
+	uuid: string
+	fee_payer: string
+	from: string
+	to: string
+	mint: string
+	amount: string
+	decimals: number
+	expires_at: string
+}
+
+/**
+ * Por qué NO se patrocina. No es un error: el usuario puede enviar igual pagando su
+ * gas, y cada motivo tiene su copy (de `not_gold` sale el gancho de GOLD).
+ */
+export type GaslessIneligibleReason = 'disabled' | 'not_gold' | 'wallet_not_registered' | 'quota_exhausted' | 'grant_spent'
+
+export type GaslessQuote =
+	| { eligible: true, grant: SponsorGrant, remaining_today: number, renews_at: string, duplicate?: boolean }
+	| { eligible: false, reason: GaslessIneligibleReason, remaining_today?: number, renews_at?: string, daily_limit?: number }
+
+export type GaslessSubmitStatus = 'confirmed' | 'pending' | 'authorized' | 'failed' | 'review'
+
+export type GaslessSubmitResult = {
+	status: GaslessSubmitStatus
+	reason: string | null
+	/** El blockhash caducó: reconstruir, re-firmar y reenviar con ESTE mismo permiso. */
+	rebuild: boolean
+	retryable: boolean
+	signature: string | null
+	explorer: string | null
+	message: string | null
+}
+
+export type SponsorGrantState = {
+	uuid: string
+	status: GaslessSubmitStatus | 'expired' | 'cancelled' | 'submitted'
+	to: string
+	mint: string
+	amount: string
+	decimals: number
+	signature: string | null
+	explorer: string | null
+	creates_ata: boolean
+	reason: string | null
+	expires_at: string
+	created_at: string
+	completed_at: string | null
+}
+
 // ── Swap saldo QvaPay ↔ activo on-chain (primer par: QUSD en Stacks) ─────────
 
 export type SwapDirection = 'out' | 'in'
@@ -538,4 +594,106 @@ export type SwapPairsPayload = {
 	limits: { kyc: boolean, daily: number | null, monthly: number | null, available: number | null, requires_kyc: boolean }
 	sponsor: { daily_per_user: number, used_today: number, remaining_today: number, max_fee_ustx: number }
 	wallet: { stx: string | null }
+}
+
+// ── Intercambio cripto↔cripto en la wallet (agregador de proveedores) ───────
+
+/**
+ * Estado de una operación de intercambio. Ojo: NO hay saldo de QvaPay de por medio —
+ * los fondos van de la wallet del usuario al proveedor y vuelven a la wallet del usuario,
+ * así que esto es seguimiento, no una transacción del libro.
+ */
+export type ExchangeStatus =
+	/** Operación abierta: falta que el usuario envíe al depósito. */
+	| 'awaiting_deposit'
+	/** El depósito está on-chain esperando confirmaciones. */
+	| 'confirming'
+	/** El proveedor está cambiando (incluye su retención de cumplimiento). */
+	| 'exchanging'
+	/** El proveedor está pagando a la wallet del usuario. */
+	| 'sending'
+	/** Pagado: `payout_hash` es la prueba. */
+	| 'completed'
+	/** Devuelto a `refund_address`. */
+	| 'refunded'
+	| 'failed'
+	/** Nunca se financió dentro de la ventana. */
+	| 'expired'
+	| 'needs_review'
+
+/** Una cotización de un proveedor, ya normalizada. */
+export type ExchangeQuote = {
+	provider: string
+	/** Lo que entra, tal y como se va a enviar: el importe tiene que ser EXACTO. */
+	amountIn: number
+	/** Estimado: la tasa es flotante y se mueve hasta que el proveedor ejecuta. */
+	amountOut: number
+	/** Comisión FIJA de la red de origen. No es proporcional: depende solo de la cadena. */
+	depositFee: number
+	rate: number | null
+	/** Minutos que el proveedor estima para el cambio entero. */
+	etaMinutes: number | null
+}
+
+/** Cuánto se lleva la comisión de depósito, y qué hacer al respecto. */
+export type ExchangeAdvice = {
+	level: 'ok' | 'warn' | 'severe'
+	/** Puntos básicos que la comisión se come del importe enviado. */
+	bps: number
+	/** Importe a partir del cual la comisión deja de doler. null si ya está bien. */
+	suggestedMinimum: number | null
+}
+
+/** "Lo mismo te sale más barato desde otra cadena." */
+export type ExchangeCheaperOrigin = {
+	assetId: string
+	depositFee: number
+	/** Lo que se ahorraría, en la moneda de origen. */
+	saving: number
+	savingBps: number
+}
+
+export type ExchangeQuotePayload = {
+	quote: ExchangeQuote
+	advice: ExchangeAdvice
+	min_amount: number | null
+	/** Para confirmar sin recotizar. Caduca en 2 minutos. */
+	quote_id: string | null
+	expires_at: string | null
+	alternatives: ExchangeQuote[]
+	cheaper_origin: ExchangeCheaperOrigin | null
+}
+
+/** Catálogo de lo intercambiable (`GET /wallet/exchange/quote`). */
+export type ExchangeCatalogPayload = {
+	supported: string[]
+	/** assetId → por qué no se puede intercambiar. Se enseña, no se esconde. */
+	unsupported: Record<string, string>
+}
+
+/** Operación de intercambio tal como la serializa el backend. */
+export type ExchangeOrder = {
+	uuid: string
+	provider: string
+	provider_label: string
+	from_asset: string
+	to_asset: string
+	/** Decimales como string: el importe a enviar tiene que ser exacto. */
+	amount_in: string
+	expected_out: string | null
+	actual_out: string | null
+	/** Adonde el usuario tiene que enviar. Null solo si algo fue mal al abrirla. */
+	deposit_address: string | null
+	refund_address: string
+	payout_address: string
+	/** Hashes on-chain: lo que mandó y lo que recibió. El enlace lo arma la app. */
+	payin_hash: string | null
+	payout_hash: string | null
+	status: ExchangeStatus
+	reason: string | null
+	created_at: string
+	funded_at: string | null
+	completed_at: string | null
+	/** Solo en el detalle: desviación de lo recibido frente a lo prometido. */
+	deviation_bps?: number | null
 }
