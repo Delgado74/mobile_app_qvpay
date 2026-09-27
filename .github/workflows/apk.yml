@@ -2,6 +2,15 @@ name: APK
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Rama del fork a construir
+        required: true
+        default: main
+        type: choice
+        options:
+          - main
+          - fix/p2p-chat-keyboard
 
 permissions:
   contents: read
@@ -12,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
 
       - uses: actions/setup-node@v4
         with:
