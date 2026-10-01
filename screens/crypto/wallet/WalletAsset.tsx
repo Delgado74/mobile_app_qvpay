@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Linking, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner-native'
 import { FlashList } from '@shopify/flash-list'
@@ -23,8 +23,15 @@ import { canSendAsset } from './walletSendActions'
 import useCanSwapAsset from './useCanSwapAsset'
 import type { ApiError } from '../../../api/unwrap'
 
+// Catálogo de monedas de QvaPay (el mismo que ya alimenta los precios de esta pantalla)
+import useCoins from '../../../hooks/useCoins'
+
 // Settings
 import { useSettings } from '../../../settings/SettingsContext'
+
+// Auth: sin sesión (modo wallet) no hay historial, intercambio ni energía — son del backend
+import { useAuth } from '../../../auth/AuthContext'
+import AccountUpsellCard from './components/AccountUpsellCard'
 
 // Helpers
 import { timeAgo } from '../../../helpers'
@@ -92,12 +99,19 @@ const TxRow = ({ tx, theme, onPress }: TxRowProps) => {
 	)
 }
 
-type ActionProps = { icon: FontAwesome6SolidIconName, label: string, onPress: () => void, dimmed?: boolean, theme: Theme }
+/** Atajo al detalle de mercado en la cabecera (Android e iOS anteriores a 26). */
+const MarketButton = ({ label, color, onPress }: { label: string, color: string, onPress: () => void }) => (
+	<Pressable onPress={onPress} hitSlop={8} accessibilityRole="button" accessibilityLabel={label}>
+		<FontAwesome6 name="chart-line" size={18} color={color} iconStyle="solid" />
+	</Pressable>
+)
 
-const Action = ({ icon, label, onPress, dimmed, theme }: ActionProps) => {
+type ActionProps = { icon: FontAwesome6SolidIconName, label: string, onPress: () => void, dimmed?: boolean, theme: Theme, testID?: string }
+
+const Action = ({ icon, label, onPress, dimmed, theme, testID }: ActionProps) => {
 	const color = dimmed ? theme.colors.tertiaryText : theme.colors.primaryText
 	return (
-		<QPPressable onPress={onPress} style={[styles.action, { backgroundColor: theme.colors.elevation }]} accessibilityRole="button" accessibilityLabel={label}>
+		<QPPressable onPress={onPress} testID={testID} style={[styles.action, { backgroundColor: theme.colors.elevation }]} accessibilityRole="button" accessibilityLabel={label}>
 			<FontAwesome6 name={icon} size={17} color={color} iconStyle="solid" />
 			<Text numberOfLines={1} style={{ color, fontSize: theme.typography.fontSize.xs, fontFamily: theme.typography.fontFamily.medium }}>{label}</Text>
 		</QPPressable>
@@ -119,12 +133,23 @@ const WalletAsset = ({ navigation, route }: Props) => {
 	const containerStyles = useContainerStyles(theme)
 
 	const { addresses, isBackedUp } = useWallet()
+	const { isAuthenticated } = useAuth()
 	const registry = useEffectiveRegistry()
 	const { all, isLoading: balancesLoading, refetch: refetchBalances } = useWalletAssets()
 	const prices = usePriceMap()
 	const asset = useMemo(() => all.find(a => a.id === assetId), [all, assetId])
 	const chain = asset ? registry.chains[asset.chainKey] : undefined
 	const address = asset && addresses ? addressForKind(addresses, asset.kind) : null
+
+	// La moneda del catálogo detrás de este activo, si la hay: es lo que abre el detalle de
+	// mercado. QUSD y STX no están en el catálogo, así que ahí el botón no aparece en vez de
+	// llevar a una pantalla sin precio ni gráfico. Misma query que usa `usePriceMap`, sin
+	// petición extra
+	const { coins } = useCoins('all')
+	const marketCoin = useMemo(
+		() => (asset?.priceTick ? coins.find(coin => coin.tick === asset.priceTick) ?? null : null),
+		[coins, asset?.priceTick],
+	)
 
 	const { getSetting } = useSettings()
 	const showBalance = getSetting('privacy', 'showBalance', true) as boolean
@@ -159,8 +184,27 @@ const WalletAsset = ({ navigation, route }: Props) => {
 	}, [refetchBalances, history, asset])
 
 	useLayoutEffect(() => {
-		if (asset) navigation.setOptions({ headerTitle: `${asset.symbol} · ${asset.chainName}` })
-	}, [navigation, asset])
+		if (!asset) return
+		const openMarket = marketCoin
+			? () => navigation.navigate(ROUTES.COIN_DETAIL_SCREEN, { tick: marketCoin.tick, name: marketCoin.name, initialData: marketCoin })
+			: null
+		navigation.setOptions({
+			headerTitle: `${asset.symbol} · ${asset.chainName}`,
+			// Atajo al precio: el mismo detalle que abre la moneda desde el listado del tab
+			...(openMarket && {
+				headerRight: () => <MarketButton label={t('crypto.wallet.asset.market')} color={theme.colors.primaryText} onPress={openMarket} />,
+				// iOS 26+: item nativo, compatible con el blur del header
+				...(Platform.OS === 'ios' && {
+					unstable_headerRightItems: () => [{
+						type: 'button',
+						label: t('crypto.wallet.asset.market'),
+						icon: { type: 'sfSymbol', name: 'chart.line.uptrend.xyaxis' },
+						onPress: openMarket,
+					}],
+				}),
+			}),
+		})
+	}, [navigation, asset, marketCoin, theme, t])
 
 	const openUrl = useCallback((url: string | null) => {
 		if (!url) return
@@ -200,6 +244,7 @@ const WalletAsset = ({ navigation, route }: Props) => {
 				<Action
 					theme={theme}
 					icon="paper-plane"
+					testID="asset-action-send"
 					label={t('crypto.wallet.home.actions.send')}
 					dimmed={!canSendAsset(asset)}
 					onPress={() => !canSendAsset(asset) ? toast(t('crypto.wallet.home.sendSoon')) : isBackedUp ? navigation.navigate(ROUTES.WALLET_SEND, { assetId: asset.id }) : navigation.navigate(ROUTES.WALLET_BACKUP)}
@@ -207,6 +252,7 @@ const WalletAsset = ({ navigation, route }: Props) => {
 				<Action
 					theme={theme}
 					icon="qrcode"
+					testID="asset-action-receive"
 					label={t('crypto.wallet.home.actions.receive')}
 					onPress={() => (isBackedUp ? navigation.navigate(ROUTES.WALLET_RECEIVE, { assetId: asset.id }) : navigation.navigate(ROUTES.WALLET_BACKUP))}
 				/>
@@ -214,24 +260,28 @@ const WalletAsset = ({ navigation, route }: Props) => {
 					<Action
 						theme={theme}
 						icon="arrows-rotate"
+						testID="asset-action-swap"
 						label={t('crypto.wallet.home.actions.swap')}
 						onPress={() => (isBackedUp ? navigation.navigate(ROUTES.WALLET_SWAP, { assetId: asset.id }) : navigation.navigate(ROUTES.WALLET_BACKUP))}
 					/>
 				)}
-				{isTron && (
+				{isTron && isAuthenticated && (
 					<Action
 						theme={theme}
 						icon="bolt"
+						testID="asset-action-energy"
 						label={t('crypto.energy.resources.energy')}
 						onPress={() => navigation.navigate(ROUTES.WALLET_ENERGY, undefined)}
 					/>
 				)}
 				{!canSwap && (
-					<Action theme={theme} icon="up-right-from-square" label={t('crypto.wallet.asset.explorer')} onPress={() => openUrl(address ? explorerAddressUrl(chain, address) : null)} />
+					<Action theme={theme} icon="up-right-from-square" testID="asset-action-explorer" label={t('crypto.wallet.asset.explorer')} onPress={() => openUrl(address ? explorerAddressUrl(chain, address) : null)} />
 				)}
 			</View>
 
 			<Text style={[textStyles.h3, styles.sectionTitle, { color: theme.colors.primaryText }]}>{t('crypto.wallet.asset.activity')}</Text>
+
+			{!isAuthenticated && allItems.length === 0 && <AccountUpsellCard variant="history" />}
 
 			{history.isInitialLoading && (
 				<View style={styles.historySkeleton}>
@@ -251,7 +301,7 @@ const WalletAsset = ({ navigation, route }: Props) => {
 				</View>
 			)}
 
-			{history.isReady && !history.isError && allItems.length === 0 && !hasMore && (
+			{isAuthenticated && history.isReady && !history.isError && allItems.length === 0 && !hasMore && (
 				<View style={[styles.emptyBox, { backgroundColor: theme.colors.surface }]}>
 					<FontAwesome6 name="inbox" size={20} color={theme.colors.secondaryText} iconStyle="solid" />
 					<Text style={[textStyles.h5, styles.emptyText, { color: theme.colors.secondaryText }]}>{t('crypto.wallet.asset.empty', { symbol: asset.symbol })}</Text>
