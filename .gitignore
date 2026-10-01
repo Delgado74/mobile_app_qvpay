@@ -92,3 +92,4 @@ yarn-error.log
 # las capturas y reportes de cada corrida, no
 !/.maestro/
 .maestro/output/
+.github/workflows/apk.yml
