@@ -1,0 +1,62 @@
+name: APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Rama del fork a construir
+        required: true
+        default: main
+        type: choice
+        options:
+          - main
+          - fix/p2p-chat-keyboard
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: assembleRelease arm64-v8a
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - run: npm ci
+
+      - name: Provision ephemeral test-signing keystore
+        working-directory: android
+        run: |
+          keytool -genkeypair -v -keystore ci-release.keystore \
+            -alias qvapay-ci -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=QvaPay CI, OU=CI, O=QvaPay, C=CU"
+          {
+            echo "MYAPP_UPLOAD_STORE_FILE=../ci-release.keystore"
+            echo "MYAPP_UPLOAD_STORE_PASSWORD=android"
+            echo "MYAPP_UPLOAD_KEY_ALIAS=qvapay-ci"
+            echo "MYAPP_UPLOAD_KEY_PASSWORD=android"
+          } > keystore.properties
+
+      - name: Build release APK (arm64-v8a only)
+        working-directory: android
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qvapay-release-arm64-v8a
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
