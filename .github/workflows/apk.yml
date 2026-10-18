@@ -10,7 +10,7 @@ on:
         type: choice
         options:
           - main
-          - fix/p2p-chat-keyboard
+          - fix/remove-unused-device-brightness
 
 permissions:
   contents: read
